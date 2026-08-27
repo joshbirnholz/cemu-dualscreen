@@ -1012,11 +1012,18 @@ void LatteRenderTarget_itHLECopyColorBufferToScanBuffer(MPTR colorBufferPtr, uin
 		if (g_renderer->IsPadWindowActive())
 			LatteRenderTarget_copyToBackbuffer(texView, true); // also taps Dualscreen, from inside there
 		else
+		{
 			// Nothing here draws a backbuffer nobody is showing, but the game
 			// still rendered this and a shell may still want it -- the
 			// pad-window check above is about Cemu's own separate window,
-			// which a Dualscreen session has no reason to need.
+			// which a Dualscreen session has no reason to need. Standing in
+			// for the two lines copyToBackbuffer always starts with: without
+			// them the texture this reads can be stale or not yet uploaded,
+			// since nothing else touched it this frame to say otherwise.
+			LatteTexture_UpdateDataToLatest(texView->baseTexture);
+			LatteTC_MarkTextureStillInUse(texView->baseTexture);
 			g_renderer->HandleDualscreenFrame(texView, true);
+		}
 	}
 	if (((renderTarget & RENDER_TARGET_TV) && !showDRC) || ((renderTarget & RENDER_TARGET_DRC) && showDRC))
 		LatteRenderTarget_copyToBackbuffer(texView, false);
