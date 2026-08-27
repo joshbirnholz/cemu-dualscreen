@@ -61,7 +61,14 @@ Vulkan only. On OpenGL the frames are simply not handed over -- see
 
 ## Not done yet
 
-- **Audio.** `DualscreenSession::SendAudio` exists and the far side is listening
-  for it, but nothing in Cemu calls it, so the sound stays on this machine.
-- **Reset.** The shell's Reset button arrives and is logged; restarting a title
-  cannot be done from the thread it arrives on.
+- **DRC (GamePad) audio.** TV audio reaches the link, from `ax_out.cpp`'s
+  `AIInitDMA`. A Wii U's second audio stream, the one meant for the GamePad's
+  own speaker, is a separate AX device (`g_padAudio`) this does not touch --
+  the link only carries one stream today.
+- **Reset.** The shell's Reset button arrives and is logged, deliberately not
+  acted on. Handing the request from the GPU thread (where it arrives) to the
+  main thread is buildable, the same way `CafeSystem::RequestRecreateCanvas()`
+  already does it. What it would call is not: the only stop-a-running-title
+  path Cemu has, `MainWindow::EndEmulation()`, is marked by its own author as
+  unfinished, with memory leaks and crashes after about three uses. Wiring
+  Reset through that would make repeated presses worse than doing nothing.

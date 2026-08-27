@@ -96,9 +96,16 @@ void DualscreenSession::Poll()
 	}
 	if (resetRequested)
 	{
-		// Not wired up yet. Restarting a title is not something that can be
-		// done from the thread this arrives on, so the shell's Reset does
-		// nothing on a Wii U until it is.
+		// Deliberately not wired up. Poll() runs on the GPU thread, so acting
+		// on this means handing off to the main thread the way
+		// CafeSystem::RequestRecreateCanvas() does -- that part is buildable.
+		// What it would call is not: the only stop-a-running-title path Cemu
+		// has is MainWindow::EndEmulation(), and its own comment calls it
+		// unfinished, with memory leaks and crashes after about three uses.
+		// Wiring a shell's Reset button through that would make the third
+		// press worse than the first two did nothing, which is a worse
+		// failure than not having Reset at all. Revisit once Cemu's own
+		// restart path is not the one thing standing in the way.
 		cemuLog_log(LogType::Force, "Dualscreen: the shell asked for a reset, which is not "
 									"implemented yet");
 	}
