@@ -63,30 +63,51 @@ void VulkanRenderer::DualscreenDrain(size_t screenIndex)
 
 		const size_t count = (size_t)slot.width * slot.height;
 		m_dualscreenPixels.resize(count);
-		const uint8* source = (const uint8*)slot.mapped;
-		// RGBA8 in, XRGB8888 out. The gamma question is decided the same way
-		// Cemu's own screenshot decides it, so what crosses the link matches
-		// what is on the television here rather than being a second opinion.
-		const bool toRGB = slot.srgb && !dstUsesSRGB;
-		const bool toSRGB = !slot.srgb && dstUsesSRGB;
-		for (size_t index = 0; index < count; ++index)
+		if (slot.packed_a2b10g10r10)
 		{
-			uint8 r = source[index * 4 + 0];
-			uint8 g = source[index * 4 + 1];
-			uint8 b = source[index * 4 + 2];
-			if (toRGB)
+			// A2B10G10R10_UNORM_PACK32 has no sRGB-tagged twin to compare
+			// against dstUsesSRGB the way RGBA8 does below -- there is nothing
+			// else here that says what encoding these bits are in besides the
+			// buffer's own flag, which is what chose dstUsesSRGB in the first
+			// place. So there is no second opinion to reconcile: read the ten
+			// bits down to eight and send them as they are.
+			const uint32* source = (const uint32*)slot.mapped;
+			for (size_t index = 0; index < count; ++index)
 			{
-				r = SRGBComponentToRGB(r);
-				g = SRGBComponentToRGB(g);
-				b = SRGBComponentToRGB(b);
+				const uint32 packed = source[index];
+				const uint8 r = (uint8)((packed & 0x3FFu) >> 2);
+				const uint8 g = (uint8)(((packed >> 10) & 0x3FFu) >> 2);
+				const uint8 b = (uint8)(((packed >> 20) & 0x3FFu) >> 2);
+				m_dualscreenPixels[index] = ((uint32)r << 16) | ((uint32)g << 8) | (uint32)b;
 			}
-			else if (toSRGB)
+		}
+		else
+		{
+			const uint8* source = (const uint8*)slot.mapped;
+			// RGBA8 in, XRGB8888 out. The gamma question is decided the same way
+			// Cemu's own screenshot decides it, so what crosses the link matches
+			// what is on the television here rather than being a second opinion.
+			const bool toRGB = slot.srgb && !dstUsesSRGB;
+			const bool toSRGB = !slot.srgb && dstUsesSRGB;
+			for (size_t index = 0; index < count; ++index)
 			{
-				r = RGBComponentToSRGB(r);
-				g = RGBComponentToSRGB(g);
-				b = RGBComponentToSRGB(b);
+				uint8 r = source[index * 4 + 0];
+				uint8 g = source[index * 4 + 1];
+				uint8 b = source[index * 4 + 2];
+				if (toRGB)
+				{
+					r = SRGBComponentToRGB(r);
+					g = SRGBComponentToRGB(g);
+					b = SRGBComponentToRGB(b);
+				}
+				else if (toSRGB)
+				{
+					r = RGBComponentToSRGB(r);
+					g = RGBComponentToSRGB(g);
+					b = RGBComponentToSRGB(b);
+				}
+				m_dualscreenPixels[index] = ((uint32)r << 16) | ((uint32)g << 8) | (uint32)b;
 			}
-			m_dualscreenPixels[index] = ((uint32)r << 16) | ((uint32)g << 8) | (uint32)b;
 		}
 		DualscreenSession::instance().PublishScreen(screen, slot.serial,
 													m_dualscreenPixels.data(), slot.width,
@@ -124,12 +145,17 @@ void VulkanRenderer::HandleDualscreenFrame(LatteTextureView* texView, bool padVi
 		return;
 
 	const auto format = baseImageTex->GetFormat();
-	if (format != VK_FORMAT_R8G8B8A8_UNORM && format != VK_FORMAT_R8G8B8A8_SRGB)
+	const bool isRGBA8 = (format == VK_FORMAT_R8G8B8A8_UNORM || format == VK_FORMAT_R8G8B8A8_SRGB);
+	// Some titles (Wind Waker HD among them) render through a 10-bit-per-channel
+	// scan buffer rather than RGBA8. Same four bytes per pixel, so it needs no
+	// extra machinery here -- only DualscreenDrain reads the bits differently.
+	const bool isPacked1010102 = (format == VK_FORMAT_A2B10G10R10_UNORM_PACK32);
+	if (!isRGBA8 && !isPacked1010102)
 	{
-		// Everything else would need the blit-to-a-temporary-image dance the
-		// screenshot path does, which is a lot of machinery for a case that may
-		// never come up: a Wii U's scan buffer is RGBA8. Said once, because if
-		// it does come up it is a property of the title rather than of a frame.
+		// Anything else would need the blit-to-a-temporary-image dance the
+		// screenshot path does, which is a lot of machinery for a case that has
+		// not come up yet. Said once, because if it does come up it is a
+		// property of the title rather than of a frame.
 		if (!m_dualscreenFormatWarned)
 		{
 			m_dualscreenFormatWarned = true;
@@ -195,7 +221,21 @@ void VulkanRenderer::HandleDualscreenFrame(LatteTextureView* texView, bool padVi
 
 	slot.width = width;
 	slot.height = height;
-	slot.srgb = (format == VK_FORMAT_R8G8B8A8_SRGB);
+	slot.packed_a2b10g10r10 = isPacked1010102;
+	if (isPacked1010102)
+	{
+		// No sRGB-tagged twin exists for this layout to read a hint off of, so
+		// there is nothing to reconcile against dstUsesSRGB in DualscreenDrain
+		// -- mark it equal, which is what tells that pass to leave the bits as
+		// they are.
+		const bool dstUsesSRGB =
+			padView ? LatteGPUState.drcBufferUsesSRGB : LatteGPUState.tvBufferUsesSRGB;
+		slot.srgb = dstUsesSRGB;
+	}
+	else
+	{
+		slot.srgb = (format == VK_FORMAT_R8G8B8A8_SRGB);
+	}
 	// Both screens of one emulated frame share this, which is what stops the
 	// two devices showing halves of different moments.
 	slot.serial = LatteGPUState.frameCounter;

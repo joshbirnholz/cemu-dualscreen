@@ -673,6 +673,10 @@ private:
 		int width = 0;
 		int height = 0;
 		bool srgb = false;
+		// A2B10G10R10_UNORM_PACK32 rather than RGBA8 -- some titles' scan
+		// buffers are 10-bit-per-channel. Same four bytes per pixel, so the
+		// copy above does not change; only how DualscreenDrain reads them does.
+		bool packed_a2b10g10r10 = false;
 		uint64 commandBufferId = 0;
 		uint64 serial = 0;
 		bool pending = false;
