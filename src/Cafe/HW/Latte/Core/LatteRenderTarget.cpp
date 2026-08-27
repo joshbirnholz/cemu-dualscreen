@@ -1007,8 +1007,17 @@ void LatteRenderTarget_itHLECopyColorBufferToScanBuffer(MPTR colorBufferPtr, uin
 
 	bool showDRC = swkbd_hasKeyboardInputHook() == false && (isDRCPrimary ^ altScreenRequested);
 
-	if ((renderTarget & RENDER_TARGET_DRC) && g_renderer->IsPadWindowActive())
-		LatteRenderTarget_copyToBackbuffer(texView, true);
+	if (renderTarget & RENDER_TARGET_DRC)
+	{
+		if (g_renderer->IsPadWindowActive())
+			LatteRenderTarget_copyToBackbuffer(texView, true); // also taps Dualscreen, from inside there
+		else
+			// Nothing here draws a backbuffer nobody is showing, but the game
+			// still rendered this and a shell may still want it -- the
+			// pad-window check above is about Cemu's own separate window,
+			// which a Dualscreen session has no reason to need.
+			g_renderer->HandleDualscreenFrame(texView, true);
+	}
 	if (((renderTarget & RENDER_TARGET_TV) && !showDRC) || ((renderTarget & RENDER_TARGET_DRC) && showDRC))
 		LatteRenderTarget_copyToBackbuffer(texView, false);
 }
