@@ -4,10 +4,12 @@
 #include "audio/IAudioAPI.h"
 //#include "ax.h"
 #include "config/CemuConfig.h"
+#include "DualscreenSession.h"
 
 namespace snd_core
 {
 	uint32 numProcessedFrames = 0;
+	bool s_dualscreenAudioChannelsWarned = false;
 
 	void resetNumProcessedFrames()
 	{
@@ -184,7 +186,28 @@ namespace snd_core
 		if (tempAudioBlockCounter == AX_FRAMES_PER_GROUP)
 		{
 			if(g_tvAudio)
+			{
 				g_tvAudio->FeedBlock(tempTVChannelData);
+				// The same block just fed to the real output device, handed to
+				// Dualscreen too. Only when it is genuinely interleaved stereo,
+				// which is what the link carries and what Cemu's own default
+				// (tv_channels = kStereo) produces -- a player who has switched
+				// TV audio to mono or surround gets silence over the link rather
+				// than a guess at downmixing six channels blind.
+				if (channels == 2)
+				{
+					DualscreenSession::instance().SendAudio(
+						tempTVChannelData, AX_SAMPLES_PER_3MS_48KHZ * AX_FRAMES_PER_GROUP);
+				}
+				else if (!s_dualscreenAudioChannelsWarned)
+				{
+					s_dualscreenAudioChannelsWarned = true;
+					cemuLog_log(LogType::Force,
+								"Dualscreen: TV audio is not stereo ({} channels), so it is not "
+								"being sent",
+								channels);
+				}
+			}
 
 			tempAudioBlockCounter = 0;
 		}
