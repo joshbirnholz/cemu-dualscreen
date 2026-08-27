@@ -33,13 +33,17 @@ ENV DEBIAN_FRONTEND=noninteractive
 # respectively (see .github/workflows/build.yml) -- and build-essential +
 # linux-libc-dev.
 #
-# That last pair isn't in BUILD.md or CI's list at all: both assume a
-# machine that already has basic build tools on it, which a from-scratch
-# ubuntu:22.04 container does not. Individual vcpkg ports (openssl's is the
-# one that surfaced it) build themselves with plain `make`/`cc`, separately
-# from the clang-15 pin below that only governs Cemu's own top-level build
-# -- without build-essential (make, gcc, g++, libc6-dev) and the kernel
-# headers in linux-libc-dev, those ports fail outright.
+# That last pair, and autoconf/automake/autoconf-archive/m4/gettext below,
+# aren't in BUILD.md or CI's list at all: both assume a machine that already
+# has basic build tools on it (GitHub Actions' ubuntu-22.04 runners ship
+# build-essential, autoconf and friends preinstalled), which a from-scratch
+# ubuntu:22.04 container does not. Individual vcpkg ports build themselves
+# with plain `make`/`cc`/autotools, separately from the clang-15 pin below
+# that only governs Cemu's own top-level build -- openssl needed make and
+# libc headers, libusb needs autoconf/automake/autoconf-archive to
+# regenerate its build scripts (vcpkg_run_autoreconf); m4 and gettext ride
+# along since they're what autoreconf itself commonly reaches for on other
+# ports before it fails on the same class of error one port at a time.
 #
 # No runtime GPU/audio packages here: nothing built from this image is
 # meant to run inside it. See docker/package-appimage.sh -- the output is a
@@ -47,12 +51,16 @@ ENV DEBIAN_FRONTEND=noninteractive
 # GPU driver, no container involved at that end at all.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         appstream \
+        autoconf \
+        autoconf-archive \
+        automake \
         build-essential \
         ca-certificates \
         clang-15 \
         cmake \
         curl \
         freeglut3-dev \
+        gettext \
         git \
         libbluetooth-dev \
         libgcrypt20-dev \
@@ -65,6 +73,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libudev-dev \
         libusb-1.0-0-dev \
         linux-libc-dev \
+        m4 \
         nasm \
         ninja-build \
         pkg-config \
