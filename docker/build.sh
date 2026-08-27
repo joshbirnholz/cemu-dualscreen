@@ -4,8 +4,12 @@
 # result is the same regardless of which machine ran this -- your PC, the
 # Deck, whichever. Replaces the old "distrobox create, then remember what
 # you installed into it" workflow: the environment is this Dockerfile,
-# checked into git, and `docker build` reproduces it byte-for-byte instead
+# checked into git, and `podman build` reproduces it byte-for-byte instead
 # of trusting that two hand-built containers stayed in sync.
+#
+# Uses podman, not docker: SteamOS ships podman already (distrobox is built
+# on it), so there is nothing to install and nothing that needs
+# steamos-readonly disabled -- this runs exactly as a normal user, no root.
 #
 # Usage: docker/build.sh [extra cmake args...]
 #   docker/build.sh                              # release build (default)
@@ -18,9 +22,9 @@ IMAGE_TAG="cemu-dualscreen-buildenv:22.04-clang15"
 
 cd "$REPO_ROOT"
 
-# 1. The environment. Cached by docker after the first run -- this is a
+# 1. The environment. Cached by podman after the first run -- this is a
 # no-op unless docker/Dockerfile itself changed.
-docker build -t "$IMAGE_TAG" "$SCRIPT_DIR"
+podman build -t "$IMAGE_TAG" "$SCRIPT_DIR"
 
 # 2. The working tree. Plain git, on the host, so it uses your own SSH key
 # rather than needing one handed into the container.
@@ -40,7 +44,7 @@ fi
 # HOME points at a repo-local, gitignored directory so vcpkg's binary cache
 # survives between runs without needing anything writable outside the repo.
 mkdir -p "$REPO_ROOT/docker/.home"
-docker run --rm \
+podman run --rm \
     --user "$(id -u):$(id -g)" \
     -e HOME=/home-cache \
     -v "$REPO_ROOT/docker/.home":/home-cache \

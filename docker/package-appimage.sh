@@ -15,6 +15,8 @@
 # build-appimage job) -- just as one local step instead of two CI jobs
 # passing an artifact between them.
 #
+# Uses podman, not docker -- see build.sh for why.
+#
 # Usage: docker/package-appimage.sh
 set -euo pipefail
 
@@ -29,10 +31,10 @@ if [ ! -f bin/Cemu_release ]; then
     exit 1
 fi
 
-docker build -t "$IMAGE_TAG" "$SCRIPT_DIR"
+podman build -t "$IMAGE_TAG" "$SCRIPT_DIR"
 
 mkdir -p "$REPO_ROOT/docker/.home"
-docker run --rm \
+podman run --rm \
     --user "$(id -u):$(id -g)" \
     -e HOME=/home-cache \
     -e LD_LIBRARY_PATH=/usr/local/lib \

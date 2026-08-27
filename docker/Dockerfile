@@ -3,23 +3,24 @@
 # bind-mounted in at build time (see build.sh); this image is only the OS,
 # the compiler and the libraries Cemu's own BUILD.md asks for.
 #
-# Pinned to Ubuntu 22.04 rather than a rolling base or a "latest" tag, on
-# purpose: 22.04's apt repos are a frozen snapshot (security patches only,
-# never a package bump that changes ABI), so this Dockerfile produces the
-# same toolchain today, next year, and on every machine that builds it --
-# which is the whole point of replacing distrobox here. distrobox's own
-# container is created by hand on each machine and drifts as each one pulls
-# whatever "latest" happened to mean that day; this image is versioned in
-# git instead; rebuilding it is `docker build`, not "remember what you did
-# last time."
+# SteamOS's own root filesystem is read-only by design, so a full C++ dev
+# toolchain (clang-15, cmake, vcpkg's own dependencies, ...) was never going
+# to live there directly without `steamos-readonly disable` and the
+# fragility that comes with it -- the next OS update either fights it or
+# wipes it. This Dockerfile is that writable surface instead, defined in a
+# file checked into git rather than hand-installed into a container that
+# then quietly drifts (a `distrobox upgrade`, a rolling base image moving
+# on) the way the one that broke before did. Rebuilding it from scratch, on
+# either machine, is `podman build`, not "remember what you did last time."
 #
-# 22.04 also happens to be *older* than SteamOS's own glibc, which is the
-# actual fix for the crash that started this: glibc only promises forward
-# compatibility (an old-glibc binary runs fine on a newer glibc, never the
-# reverse), so building against a deliberately older, frozen base is what
-# guarantees the binary this produces runs on the Deck no matter which
-# machine built it.
-FROM ubuntu:22.04
+# Pinned to Ubuntu 22.04 rather than a rolling base or a "latest" tag on top
+# of that: 22.04's apt repos are a frozen snapshot (security patches only,
+# never a package bump that changes ABI), and its glibc (2.35) is older
+# than any realistic target's, which is what makes the binary this produces
+# portable to begin with -- glibc only promises forward compatibility, so
+# building against a deliberately old, frozen one means the result runs
+# anywhere newer without having to check.
+FROM docker.io/library/ubuntu:22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 
