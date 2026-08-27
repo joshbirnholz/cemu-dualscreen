@@ -56,6 +56,15 @@ player one. One is created if this Cemu has never had its input configured,
 since the shell needs a GamePad to be holding. Everything reverts the moment the
 shell goes away.
 
+Motion is the one exception -- it stays Cemu's own. The link carries no gyro or
+accelerometer data at all, so whatever motion controller is configured in
+Cemu's own Input settings for player one keeps working exactly as it would
+without a shell attached. That includes a DSU client controller (Cemu already
+supports connecting to one over the network): point it at `127.0.0.1` if the
+DSU server is running on this same machine -- `SteamDeckGyroDSU` on a Deck that
+is hosting, for instance -- or at another device's address if that is where the
+server is, such as a Deck acting as the companion.
+
 Vulkan only. On OpenGL the frames are simply not handed over -- see
 `Renderer::HandleDualscreenFrame`.
 
