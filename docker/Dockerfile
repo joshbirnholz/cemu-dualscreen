@@ -28,15 +28,26 @@ ENV DEBIAN_FRONTEND=noninteractive
 # section, plus libusb-1.0-0-dev (BUILD.md's own noted vcpkg/hidapi
 # workaround), the handful vcpkg itself needs to fetch and unpack its own
 # dependencies (ca-certificates, curl, zip/unzip/tar, pkg-config, python3),
-# and libudev-dev + appstream -- the two packages upstream's own CI adds on
-# top of BUILD.md's list for the compile and the AppImage packaging steps
-# respectively (see .github/workflows/build.yml). No runtime GPU/audio
-# packages here: nothing built from this image is meant to run inside it.
-# See docker/package-appimage.sh -- the output is a single portable file
-# that runs directly against the Deck's own kernel and GPU driver, no
-# container involved at that end at all.
+# libudev-dev + appstream -- the two packages upstream's own CI adds on top
+# of BUILD.md's list for the compile and the AppImage packaging steps
+# respectively (see .github/workflows/build.yml) -- and build-essential +
+# linux-libc-dev.
+#
+# That last pair isn't in BUILD.md or CI's list at all: both assume a
+# machine that already has basic build tools on it, which a from-scratch
+# ubuntu:22.04 container does not. Individual vcpkg ports (openssl's is the
+# one that surfaced it) build themselves with plain `make`/`cc`, separately
+# from the clang-15 pin below that only governs Cemu's own top-level build
+# -- without build-essential (make, gcc, g++, libc6-dev) and the kernel
+# headers in linux-libc-dev, those ports fail outright.
+#
+# No runtime GPU/audio packages here: nothing built from this image is
+# meant to run inside it. See docker/package-appimage.sh -- the output is a
+# single portable file that runs directly against the Deck's own kernel and
+# GPU driver, no container involved at that end at all.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         appstream \
+        build-essential \
         ca-certificates \
         clang-15 \
         cmake \
@@ -53,6 +64,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libtool \
         libudev-dev \
         libusb-1.0-0-dev \
+        linux-libc-dev \
         nasm \
         ninja-build \
         pkg-config \
