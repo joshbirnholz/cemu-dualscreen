@@ -43,10 +43,24 @@ fi
 # invoking user (not root) so the files it writes are yours afterwards, and
 # HOME points at a repo-local, gitignored directory so vcpkg's binary cache
 # survives between runs without needing anything writable outside the repo.
+#
+# --userns=keep-id maps that user 1:1 with the host inside the container's
+# own user namespace -- without it, rootless podman's default remapping
+# makes the bind-mounted repo look owned by a different uid from inside the
+# container even though --user matches your real one, which is what made
+# git refuse to touch it ("detected dubious ownership") when vcpkg's own
+# bootstrap step shelled out to git. The GIT_CONFIG_* trio is a second,
+# unconditional safety net for the same check -- cheap, and it means this
+# can never break the same way again even under some other uid-mapping
+# quirk this hasn't been hit yet.
 mkdir -p "$REPO_ROOT/docker/.home"
 podman run --rm \
+    --userns=keep-id \
     --user "$(id -u):$(id -g)" \
     -e HOME=/home-cache \
+    -e GIT_CONFIG_COUNT=1 \
+    -e GIT_CONFIG_KEY_0=safe.directory \
+    -e GIT_CONFIG_VALUE_0=* \
     -v "$REPO_ROOT/docker/.home":/home-cache \
     -v "$REPO_ROOT":/workspace \
     -w /workspace \

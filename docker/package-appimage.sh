@@ -33,12 +33,21 @@ fi
 
 podman build -t "$IMAGE_TAG" "$SCRIPT_DIR"
 
+# --userns=keep-id and the GIT_CONFIG_* trio: see build.sh -- without them,
+# appimage.sh's own `git rev-parse --short HEAD` (used for the AppImage's
+# version string) silently falls back to "experimental" instead of failing
+# loudly, so this is worth carrying here even though it would not stop the
+# build the way it did in build.sh.
 mkdir -p "$REPO_ROOT/docker/.home"
 podman run --rm \
+    --userns=keep-id \
     --user "$(id -u):$(id -g)" \
     -e HOME=/home-cache \
     -e LD_LIBRARY_PATH=/usr/local/lib \
     -e DEPLOY_GTK_VERSION=3 \
+    -e GIT_CONFIG_COUNT=1 \
+    -e GIT_CONFIG_KEY_0=safe.directory \
+    -e GIT_CONFIG_VALUE_0=* \
     -v "$REPO_ROOT/docker/.home":/home-cache \
     -v "$REPO_ROOT":/workspace \
     -w /workspace \
