@@ -58,3 +58,11 @@ bin/graphicPacks/*
 
 # Ignore Finder view option files created by OS X
 .DS_Store
+
+# docker/package-appimage.sh's working files and output, and the packaging
+# tools dist/linux/appimage.sh downloads into the repo root each run.
+/AppDir/
+/artifacts/
+/linuxdeploy-*.AppImage
+/mkappimage.AppImage
+/linuxdeploy-plugin-*.sh

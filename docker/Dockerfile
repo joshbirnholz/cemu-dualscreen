@@ -25,17 +25,17 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 # The exact package list from BUILD.md's "Debian, Ubuntu and derivatives"
 # section, plus libusb-1.0-0-dev (BUILD.md's own noted vcpkg/hidapi
-# workaround) and the handful vcpkg itself needs to fetch and unpack its own
-# dependencies (ca-certificates, curl, zip/unzip/tar, pkg-config, python3).
-#
-# The last four (libvulkan1, mesa-utils, mesa-vulkan-drivers, vulkan-tools)
-# are not needed to build Cemu, only to run it -- so this same image can
-# also be the container the Deck actually launches, rather than needing a
-# second, separately-maintained one. The container's own userspace
-# GL/Vulkan loader still has to be in here even though the kernel driver
-# comes from the host through /dev/dri; distrobox does not inject that for
-# you.
+# workaround), the handful vcpkg itself needs to fetch and unpack its own
+# dependencies (ca-certificates, curl, zip/unzip/tar, pkg-config, python3),
+# and libudev-dev + appstream -- the two packages upstream's own CI adds on
+# top of BUILD.md's list for the compile and the AppImage packaging steps
+# respectively (see .github/workflows/build.yml). No runtime GPU/audio
+# packages here: nothing built from this image is meant to run inside it.
+# See docker/package-appimage.sh -- the output is a single portable file
+# that runs directly against the Deck's own kernel and GPU driver, no
+# container involved at that end at all.
 RUN apt-get update && apt-get install -y --no-install-recommends \
+        appstream \
         ca-certificates \
         clang-15 \
         cmake \
@@ -50,6 +50,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libsecret-1-dev \
         libsystemd-dev \
         libtool \
+        libudev-dev \
         libusb-1.0-0-dev \
         nasm \
         ninja-build \
@@ -58,10 +59,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         tar \
         unzip \
         zip \
-        libvulkan1 \
-        mesa-utils \
-        mesa-vulkan-drivers \
-        vulkan-tools \
     && rm -rf /var/lib/apt/lists/*
 
 ENV CC=/usr/bin/clang-15
