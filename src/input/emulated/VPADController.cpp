@@ -257,8 +257,14 @@ void VPADController::VPADRead(VPADStatus_t& status, const BtnRepeat& repeat)
 	status.dir.y = {0, 1, 0};
 	status.dir.z = {0, 0, 1};
 	status.accXY = {1.0f, 0.0f};
-	if (!hasDualscreenPad)
-		update_motion(status);
+	// Not suppressed for a Dualscreen pad the way buttons, sticks and touch
+	// are above: ExternalInput carries none of this, so there is nothing here
+	// to duplicate. update_motion() reads whatever Cemu's own controllers are
+	// configured for -- a DSU client pointed at a local or a network gyro
+	// server among them -- same as it always has, with or without a shell
+	// attached. Skipping it was simply losing gyro on every Wii U session run
+	// through the link.
+	update_motion(status);
 }
 
 void VPADController::update()
