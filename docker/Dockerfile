@@ -45,6 +45,14 @@ ENV DEBIAN_FRONTEND=noninteractive
 # along since they're what autoreconf itself commonly reaches for on other
 # ports before it fails on the same class of error one port at a time.
 #
+# llvm-15 is the same story one level up, for Cemu's own build rather than
+# a vcpkg port: apt's clang-15 package is only the compiler frontend, not
+# the matching llvm-ar-15/llvm-ranlib-15 CMake wants to archive a static
+# library with a Clang toolchain. Without it those come back
+# CMAKE_C_COMPILER_AR-NOTFOUND at configure time -- and because that gets
+# cached in build/CMakeCache.txt, fixing this needs a fresh configure, not
+# just a rerun of cmake --build (delete build/ once after this change).
+#
 # No runtime GPU/audio packages here: nothing built from this image is
 # meant to run inside it. See docker/package-appimage.sh -- the output is a
 # single portable file that runs directly against the Deck's own kernel and
@@ -73,6 +81,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libudev-dev \
         libusb-1.0-0-dev \
         linux-libc-dev \
+        llvm-15 \
         m4 \
         nasm \
         ninja-build \
