@@ -20,6 +20,10 @@ build/
 cmake-build-*/
 out/
 .cache/
+
+# docker/build.sh's persistent HOME inside the container -- vcpkg's binary
+# cache lives here between runs. Local to each machine on purpose.
+docker/.home/
 bin/Cemu_*
 bin/Cemu_*.exe
 

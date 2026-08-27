@@ -46,6 +46,11 @@ Any other IDE should also work as long as it has CMake and MSVC support. CLion a
 
 To compile Cemu, a recent enough compiler and STL with C++20 support is required! Clang-15 or higher is what we recommend.
 
+Building across more than one machine (e.g. a fast PC and a Steam Deck) and
+need the result to actually run on both? See [`docker/README.md`](docker/README.md)
+for a pinned, reproducible build environment instead of a hand-configured
+distrobox container -- `docker/build.sh` does everything below in one step.
+
 ### Dependencies
 
 #### For Arch and derivatives:
