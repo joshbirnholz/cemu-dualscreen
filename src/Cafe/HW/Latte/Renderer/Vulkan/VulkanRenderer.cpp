@@ -852,6 +852,9 @@ VulkanRenderer::~VulkanRenderer()
 	SubmitCommandBuffer();
 	WaitDeviceIdle();
 	WaitCommandBufferFinished(GetCurrentCommandBufferId());
+	// After the device is idle, so nothing is still copying into them, and
+	// before it goes away, so the mapping does not outlive what it maps.
+	DualscreenReleaseBuffers();
 	// shut down pipeline save thread
 	m_destructionRequested = true;
 	m_pipeline_cache_semaphore.notify();

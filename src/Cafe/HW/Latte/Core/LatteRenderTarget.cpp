@@ -963,6 +963,7 @@ void LatteRenderTarget_copyToBackbuffer(LatteTextureView* textureView, bool isPa
 	cemu_assert(shader);
 	g_renderer->DrawBackbufferQuad(textureView, shader, filter==LatteTextureView::MagFilter::kLinear, imageX, imageY, imageWidth, imageHeight, isPadView, clearBackground);
 	g_renderer->HandleScreenshotRequest(textureView, isPadView);
+	g_renderer->HandleDualscreenFrame(textureView, isPadView);
 	if (!g_renderer->ImguiBegin(!isPadView))
 		return;
 	swkbd_render(!isPadView);

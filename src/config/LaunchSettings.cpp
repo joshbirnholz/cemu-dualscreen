@@ -78,7 +78,8 @@ std::optional<int> LaunchSettings::HandleCommandline(const std::vector<std::wstr
 		("force-interpreter", po::value<bool>()->implicit_value(true), "Force interpreter CPU emulation, disables recompiler. Useful for debugging purposes where you want to get accurate memory accesses and stack traces.")
 		("force-multicore-interpreter", po::value<bool>()->implicit_value(true), "Force multi-core interpreter CPU emulation, disables recompiler. Only useful for getting stack traces, but slightly faster than the single-core interpreter mode.")
 		("enable-gdbstub", po::value<bool>()->implicit_value(true), "Enable GDB stub to debug executables inside Cemu using an external debugger")
-		("open-debugger", po::value<bool>()->implicit_value(true), "Open the PPC debugger window on startup");
+		("open-debugger", po::value<bool>()->implicit_value(true), "Open the PPC debugger window on startup")
+		("dualscreen-socket", po::value<std::string>(), "Hand the television and GamePad screens to a Dualscreen shell listening on this Unix socket, and take the GamePad from it");
 
 	po::options_description hidden{ "Hidden options" };
 	hidden.add_options()
@@ -184,6 +185,9 @@ std::optional<int> LaunchSettings::HandleCommandline(const std::vector<std::wstr
 		
 		if (vm.count("nsight"))
 			s_nsight_mode = vm["nsight"].as<bool>();
+
+		if (vm.count("dualscreen-socket"))
+			s_dualscreen_socket = vm["dualscreen-socket"].as<std::string>();
 
 		if(vm.count("force-interpreter"))
 			s_force_interpreter = vm["force-interpreter"].as<bool>();

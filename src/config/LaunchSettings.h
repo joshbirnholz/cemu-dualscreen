@@ -39,6 +39,10 @@ public:
 
 	static std::optional<uint32> GetPersistentId() { return s_persistent_id; }
 
+	// Where a Dualscreen shell is listening for this Wii U's two screens.
+	// Empty means this run keeps them to itself, which is the normal case.
+	static const std::string& GetDualscreenSocket() { return s_dualscreen_socket; }
+
 	static uint32 GetPPCRecLowerAddr() { return ppcRec_limitLowerAddr; };
 	static uint32 GetPPCRecUpperAddr() { return ppcRec_limitUpperAddr; };
 
@@ -64,6 +68,7 @@ private:
 	inline static bool s_force_multicore_interpreter = false;
 	
 	inline static std::optional<uint32> s_persistent_id{};
+	inline static std::string s_dualscreen_socket{};
 
 	// for recompiler debugging
 	inline static uint32 ppcRec_limitLowerAddr{};

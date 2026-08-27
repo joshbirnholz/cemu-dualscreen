@@ -102,6 +102,7 @@ target_include_directories(CemuInput PUBLIC "../")
 
 target_link_libraries(CemuInput PRIVATE
 	CemuCommon
+	CemuDualscreen
 	CemuGui
 )
 

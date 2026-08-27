@@ -7,6 +7,7 @@
 #include "input/InputManager.h"
 #include "Cafe/HW/Latte/Core/Latte.h"
 #include "Cafe/CafeSystem.h"
+#include "DualscreenSession.h"
 
 enum ControllerVPADMapping2 : uint32
 {
@@ -46,38 +47,134 @@ enum ControllerVPADMapping2 : uint32
 	VPAD_REPEAT = 0x80000000,
 };
 
-void VPADController::VPADRead(VPADStatus_t& status, const BtnRepeat& repeat)
+namespace
 {
-	controllers_update_states();
-	m_mic_active = false;
-	m_screen_active = false;
-	for (uint32 i = kButtonId_A; i < kButtonId_Max; ++i)
+	// What the shell's pad means here. A table rather than a switch so that a
+	// button added at either end is one line, and so that the two ends can be
+	// read side by side.
+	constexpr struct
 	{
-		// axis will be aplied later
-		if (is_axis_mapping(i))
-			continue;
+		ds::ExternalButton button;
+		uint32 hold;
+	} s_dualscreenButtons[] = {
+		{ds::ExternalButton::A, VPAD_A},
+		{ds::ExternalButton::B, VPAD_B},
+		{ds::ExternalButton::X, VPAD_X},
+		{ds::ExternalButton::Y, VPAD_Y},
+		{ds::ExternalButton::L, VPAD_L},
+		{ds::ExternalButton::R, VPAD_R},
+		{ds::ExternalButton::Zl, VPAD_ZL},
+		{ds::ExternalButton::Zr, VPAD_ZR},
+		{ds::ExternalButton::Plus, VPAD_PLUS},
+		{ds::ExternalButton::Minus, VPAD_MINUS},
+		{ds::ExternalButton::Up, VPAD_UP},
+		{ds::ExternalButton::Down, VPAD_DOWN},
+		{ds::ExternalButton::Left, VPAD_LEFT},
+		{ds::ExternalButton::Right, VPAD_RIGHT},
+		{ds::ExternalButton::LeftStick, VPAD_STICK_L},
+		{ds::ExternalButton::RightStick, VPAD_STICK_R},
+	};
 
-		if (is_mapping_down(i))
+	uint32 DualscreenHold(const ds::ExternalInput& pad)
+	{
+		uint32 hold = 0;
+		for (const auto& entry : s_dualscreenButtons)
 		{
-			const uint32 value = get_emulated_button_flag(i);
-			if (value == 0)
-			{
-				// special buttons
-				if (i == kButtonId_Mic)
-					m_mic_active = true;
-				else if (i == kButtonId_Screen)
-					m_screen_active = true;
-
-				continue;
-			}
-
-			status.hold |= value;
+			if (pad.pressed(entry.button))
+				hold |= entry.hold;
 		}
+		return hold;
 	}
 
-	m_homebutton_down |= is_home_down();
+	glm::vec2 DualscreenStick(sint16 x, sint16 y)
+	{
+		// The shell sends libretro's range with y positive downwards; here y is
+		// positive up.
+		constexpr float kRange = 32767.0f;
+		return {std::clamp(x / kRange, -1.0f, 1.0f), std::clamp(-y / kRange, -1.0f, 1.0f)};
+	}
 
-	const auto axis = get_axis();
+	void DualscreenTouch(VPADStatus_t& status, const ds::ExternalInput& pad, glm::ivec2& lastTouch)
+	{
+		status.tpData.touch = kTpTouchOff;
+		status.tpData.validity = kTpInvalid;
+		// x,y kept from the previous update, for the same reason update_touch
+		// keeps them.
+		status.tpData.x = (uint16)lastTouch.x;
+		status.tpData.y = (uint16)lastTouch.y;
+
+		auto& session = DualscreenSession::instance();
+		const int width = session.PadWidth();
+		const int height = session.PadHeight();
+		if (pad.touching && width > 0 && height > 0)
+		{
+			const float x = std::clamp((float)pad.touch_x / (float)width, 0.0f, 1.0f);
+			const float y = std::clamp((float)pad.touch_y / (float)height, 0.0f, 1.0f);
+
+			status.tpData.touch = kTpTouchOn;
+			status.tpData.validity = kTpValid;
+			status.tpData.x = (uint16)(x * 3883.0f + 92.0f);
+			status.tpData.y = (uint16)(4095.0f - y * 3694.0f - 254.0f);
+
+			lastTouch = glm::ivec2{status.tpData.x, status.tpData.y};
+		}
+
+		status.tpProcessed1 = status.tpData;
+		status.tpProcessed2 = status.tpData;
+	}
+} // namespace
+
+void VPADController::VPADRead(VPADStatus_t& status, const BtnRepeat& repeat)
+{
+	// A shell holding this Cafe's screens holds its GamePad too, all of it, so
+	// that the device the player is actually looking at is the one they are
+	// pressing. Cemu's own controllers stay in charge until one turns up.
+	ds::ExternalInput dualscreenPad;
+	const bool hasDualscreenPad = DualscreenSession::instance().ReadInput(dualscreenPad);
+
+	m_mic_active = false;
+	m_screen_active = false;
+
+	glm::vec2 axis, rotation;
+	if (hasDualscreenPad)
+	{
+		status.hold |= DualscreenHold(dualscreenPad);
+		axis = DualscreenStick(dualscreenPad.left_x, dualscreenPad.left_y);
+		rotation = DualscreenStick(dualscreenPad.right_x, dualscreenPad.right_y);
+	}
+	else
+	{
+		controllers_update_states();
+		for (uint32 i = kButtonId_A; i < kButtonId_Max; ++i)
+		{
+			// axis will be aplied later
+			if (is_axis_mapping(i))
+				continue;
+
+			if (is_mapping_down(i))
+			{
+				const uint32 value = get_emulated_button_flag(i);
+				if (value == 0)
+				{
+					// special buttons
+					if (i == kButtonId_Mic)
+						m_mic_active = true;
+					else if (i == kButtonId_Screen)
+						m_screen_active = true;
+
+					continue;
+				}
+
+				status.hold |= value;
+			}
+		}
+
+		m_homebutton_down |= is_home_down();
+
+		axis = get_axis();
+		rotation = get_rotation();
+	}
+
 	status.leftStick.x = axis.x;
 	status.leftStick.y = axis.y;
 
@@ -95,7 +192,6 @@ void VPADController::VPADRead(VPADStatus_t& status, const BtnRepeat& repeat)
 	else if (axis.y >= kAxisThreshold || (HAS_FLAG(last_hold, VPAD_STICK_L_UP) && axis.y >= kHoldAxisThreshold))
 		status.hold |= VPAD_STICK_L_UP;
 
-	const auto rotation = get_rotation();
 	status.rightStick.x = rotation.x;
 	status.rightStick.y = rotation.y;
 
@@ -135,14 +231,18 @@ void VPADController::VPADRead(VPADStatus_t& status, const BtnRepeat& repeat)
 	m_last_holdvalue = status.hold;
 
 	// touch
-	update_touch(status);
+	if (hasDualscreenPad)
+		DualscreenTouch(status, dualscreenPad, m_last_touch_position);
+	else
+		update_touch(status);
 
 	// motion
 	status.dir.x = {1, 0, 0};
 	status.dir.y = {0, 1, 0};
 	status.dir.z = {0, 0, 1};
 	status.accXY = {1.0f, 0.0f};
-	update_motion(status);
+	if (!hasDualscreenPad)
+		update_motion(status);
 }
 
 void VPADController::update()

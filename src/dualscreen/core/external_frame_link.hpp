@@ -1,0 +1,285 @@
+#pragma once
+
+#include <atomic>
+#include <cstddef>
+#include <cstdint>
+#include <string>
+#include <vector>
+
+#include "layout/screen_id.hpp"
+
+// The handover between this app and a program that plays a console this app
+// does not run -- Cemu, for a Wii U. See docs/research-notes.md for why a Wii U
+// is played that way rather than in a core.
+//
+// Two channels, because the two halves have opposite shapes:
+//
+//   Pixels go through shared memory. A television frame and a GamePad frame
+//   together are about five megabytes, sixty times a second; a socket would
+//   copy every byte of that twice for nothing.
+//
+//   Everything else goes through a Unix socket -- the handshake, audio, resets,
+//   and the end of the session. Audio is a couple of hundred kilobytes a second
+//   and does not deserve its own machinery, and a socket has the one property
+//   shared memory does not: when the program at the other end dies, this end
+//   finds out immediately rather than waiting for frames that never come.
+//
+// This app is the consumer and it goes first: it makes the memory, it listens,
+// and it hands the producer a file descriptor for that memory over the socket.
+// So there is no path to agree on, nothing left behind in /dev/shm when either
+// side crashes, and no chance of two sessions finding each other's buffers.
+//
+// Both roles are here on purpose. A protocol described twice is a protocol with
+// two subtly different implementations, and the second one is going to live in
+// a fork of somebody else's emulator.
+namespace ds {
+
+// What a producer says about itself when it connects. The consumer already
+// knows which console this is; what it cannot know is how big the pictures will
+// be, since an emulator may be rendering above native.
+struct ExternalStreamInfo {
+    int top_width = 0;
+    int top_height = 0;
+    int bottom_width = 0;
+    int bottom_height = 0;
+    int audio_sample_rate = 0;
+    // How fast the producer intends to run, for pacing. Zero means it does not
+    // know, and the console's own rate is assumed.
+    double frames_per_second = 0.0;
+};
+
+// One screen's pixels. A copy rather than a pointer into the shared memory: the
+// producer is free to overwrite a slot the moment it has published a newer one,
+// and a caller that held a pointer across a frame would be reading whatever it
+// had become.
+struct ExternalFrame {
+    std::vector<uint32_t> pixels;
+    int width = 0;
+    int height = 0;
+    uint64_t serial = 0;
+
+    bool valid() const {
+        return width > 0 && height > 0 &&
+               pixels.size() >= static_cast<std::size_t>(width) * height;
+    }
+};
+
+// What the two ends say to each other. Deliberately small: everything here is
+// either something the producer knows and this app cannot, or something a
+// player asked for that only the producer can do.
+enum class ExternalControl : uint8_t {
+    Hello = 1,     // producer -> consumer, an ExternalStreamInfo
+    Frame = 2,     // producer -> consumer, "screen S, slot N, serial X"
+    Audio = 3,     // producer -> consumer, interleaved stereo int16
+    Reset = 4,     // consumer -> producer, the player chose Reset Game
+    Shutdown = 5,  // either way, "this session is over"
+    Input = 6,     // consumer -> producer, an ExternalInput
+};
+
+// A GamePad, in its own terms rather than this app's. What crosses this link is
+// a Wii U's controls; an emulator on the far end has no interest in how this
+// app happens to represent a DS internally, and translating once here is better
+// than exporting that shape to somebody else's tree.
+//
+// The order is the wire format, so entries are only ever added at the end.
+enum class ExternalButton : uint8_t {
+    A, B, X, Y,
+    L, R, Zl, Zr,
+    Plus, Minus,
+    Up, Down, Left, Right,
+    LeftStick, RightStick,
+};
+
+// One moment's worth of it. Sent every frame rather than as changes, because a
+// pad's state is small and a missed edge is a button that sticks down.
+struct ExternalInput {
+    uint32_t buttons = 0;  // one bit per ExternalButton
+    // Both sticks, in libretro's range: [-32767, 32767], y positive downwards.
+    int16_t left_x = 0;
+    int16_t left_y = 0;
+    int16_t right_x = 0;
+    int16_t right_y = 0;
+    // The GamePad's own touch screen, in its own pixels rather than in
+    // whatever window the player is actually touching.
+    bool touching = false;
+    uint16_t touch_x = 0;
+    uint16_t touch_y = 0;
+
+    bool pressed(ExternalButton button) const {
+        return (buttons & (1u << static_cast<unsigned>(button))) != 0u;
+    }
+    void set(ExternalButton button, bool down) {
+        const uint32_t mask = 1u << static_cast<unsigned>(button);
+        buttons = down ? (buttons | mask) : (buttons & ~mask);
+    }
+    bool operator==(const ExternalInput& other) const {
+        return buttons == other.buttons && left_x == other.left_x && left_y == other.left_y &&
+               right_x == other.right_x && right_y == other.right_y &&
+               touching == other.touching && touch_x == other.touch_x &&
+               touch_y == other.touch_y;
+    }
+    bool operator!=(const ExternalInput& other) const { return !(*this == other); }
+};
+
+// How the shared memory is arranged. Both sides compute this from the same
+// numbers rather than sending it, so there is one description of the layout
+// instead of two that could disagree.
+struct ExternalSlotState {
+    // Odd while the producer is writing this slot, even when it is settled --
+    // a reader that sees an odd number, or a different one either side of its
+    // copy, knows it read a frame being overwritten and drops it. Cheaper than
+    // any lock and correct without the producer ever waiting for a reader.
+    std::atomic<uint64_t> sequence{0};
+    std::atomic<uint64_t> serial{0};
+    std::atomic<uint32_t> width{0};
+    std::atomic<uint32_t> height{0};
+};
+
+struct ExternalSharedHeader {
+    static constexpr uint32_t kMagic = 0x4C58'5344;  // "DSXL"
+    static constexpr uint32_t kVersion = 1;
+    // Three per screen: one being written, one being read, one spare. Two would
+    // do until a reader was slow, which is exactly when it matters.
+    static constexpr int kSlotsPerScreen = 3;
+    // The most a Wii U screen can be asked to be. Cemu renders above native, and
+    // the memory is made once rather than remade whenever it changes its mind.
+    static constexpr int kMaxWidth = 1920;
+    static constexpr int kMaxHeight = 1080;
+
+    std::atomic<uint32_t> magic{0};
+    std::atomic<uint32_t> version{0};
+    ExternalSlotState slots[2][kSlotsPerScreen];
+
+    static std::size_t slot_bytes() {
+        return static_cast<std::size_t>(kMaxWidth) * kMaxHeight * sizeof(uint32_t);
+    }
+    static std::size_t pixels_offset() {
+        // Rounded up so every slot starts on a page, which is what makes a
+        // partially-written slot a partially-written picture rather than a
+        // question about what a torn write to a header looks like.
+        constexpr std::size_t kPage = 4096;
+        return ((sizeof(ExternalSharedHeader) + kPage - 1) / kPage) * kPage;
+    }
+    static std::size_t total_bytes() {
+        return pixels_offset() + slot_bytes() * kSlotsPerScreen * 2;
+    }
+    static std::size_t slot_offset(int screen_index, int slot) {
+        return pixels_offset() +
+               slot_bytes() * (static_cast<std::size_t>(screen_index) * kSlotsPerScreen + slot);
+    }
+    static int screen_index(ScreenId screen) { return screen == ScreenId::Top ? 0 : 1; }
+};
+
+// The consumer: this app, waiting for something to play.
+class ExternalFrameLink {
+public:
+    ~ExternalFrameLink();
+
+    // Makes the shared memory and starts listening. `socket_path` is unlinked
+    // first: a path left behind by a crash would otherwise make this fail for
+    // a reason nobody could see.
+    bool listen(const std::string& socket_path, std::string* error);
+    void close();
+    bool listening() const { return listen_fd_ >= 0; }
+
+    // True once a producer has connected and said what it is going to send.
+    bool connected() const { return peer_fd_ >= 0 && have_info_; }
+    const ExternalStreamInfo& info() const { return info_; }
+
+    // Takes whatever has arrived: a connection, a handshake, frames, audio.
+    // False when the session has ended, with the reason in `error` -- which
+    // includes the producer exiting, since that is what "the game closed" looks
+    // like from here.
+    bool poll(std::string* error);
+
+    // The newest frame published for this screen since the last call, if any.
+    bool take_frame(ScreenId screen, ExternalFrame& out);
+    // Audio sent since the last call, interleaved stereo. Drained rather than
+    // peeked: it is played once.
+    void take_audio(std::vector<int16_t>& out);
+    // Asks the producer to restart the game. Nothing happens here; only the
+    // producer knows what restarting means.
+    void request_reset();
+    // Hands the producer the pad, which on this side is both players' pads
+    // merged. Sent only when it differs from what was sent last, so a session
+    // where nothing is being pressed costs nothing.
+    void send_input(const ExternalInput& input);
+
+    // Where a producer connects when nobody said otherwise. Under the user's
+    // runtime directory rather than /tmp, so two people on one machine do not
+    // collide and nothing survives a reboot.
+    static std::string default_socket_path();
+
+private:
+    struct Pending {
+        int slot = -1;
+        uint64_t serial = 0;
+    };
+
+    bool accept_peer(std::string* error);
+    bool read_messages(std::string* error);
+    bool handle_message(ExternalControl kind, const std::vector<uint8_t>& body,
+                        std::string* error);
+    bool send_control(ExternalControl kind, const std::vector<uint8_t>& body);
+    ExternalSharedHeader* header() { return static_cast<ExternalSharedHeader*>(memory_); }
+
+    int listen_fd_ = -1;
+    int peer_fd_ = -1;
+    int memory_fd_ = -1;
+    void* memory_ = nullptr;
+    std::string socket_path_;
+
+    ExternalStreamInfo info_;
+    bool have_info_ = false;
+    std::vector<uint8_t> inbox_;
+    std::vector<int16_t> audio_;
+    Pending pending_[2];
+    ExternalInput sent_input_;
+    bool have_sent_input_ = false;
+};
+
+// The producer: whatever is actually playing the game. Here so that the fork of
+// Cemu that will use it is working from the same code as the fake one the tests
+// drive, rather than from a description of it.
+class ExternalFrameProducer {
+public:
+    ~ExternalFrameProducer();
+
+    // Connects and says what is going to be sent. The shared memory arrives
+    // over the socket as part of this.
+    bool connect(const std::string& socket_path, const ExternalStreamInfo& info,
+                 std::string* error);
+    void close();
+    bool connected() const { return fd_ >= 0; }
+
+    // Writes one screen into the next free slot and announces it. `serial` ties
+    // the two screens of one moment together, so a consumer never shows the
+    // television from one frame beside the GamePad from another.
+    bool publish(ScreenId screen, uint64_t serial, const uint32_t* pixels, int width, int height,
+                 int stride_pixels, std::string* error);
+    bool send_audio(const int16_t* interleaved_stereo, std::size_t frames, std::string* error);
+
+    // Whether the consumer has asked for a reset since the last call, and
+    // whether it has gone away.
+    bool poll(bool& out_reset_requested, std::string* error);
+
+    // The pad as of the last thing the consumer sent. False until it has sent
+    // anything at all, which is how a fork knows to keep reading its own pads
+    // instead -- and stays true from then on, since a pad with nothing pressed
+    // is still a pad.
+    bool have_input() const { return have_input_; }
+    const ExternalInput& input() const { return input_; }
+
+private:
+    ExternalSharedHeader* header() { return static_cast<ExternalSharedHeader*>(memory_); }
+
+    int fd_ = -1;
+    int memory_fd_ = -1;
+    void* memory_ = nullptr;
+    int next_slot_[2] = {0, 0};
+    std::vector<uint8_t> inbox_;
+    ExternalInput input_;
+    bool have_input_ = false;
+};
+
+}  // namespace ds

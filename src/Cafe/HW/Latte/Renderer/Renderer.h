@@ -73,6 +73,18 @@ public:
 
 	virtual void HandleScreenshotRequest(LatteTextureView* texView, bool padView){}
 
+	// Hands this screen to Dualscreen, if a shell is listening. Called from the
+	// same place as the screenshot above, once per screen per frame, with the
+	// same texture -- the game's own output, before any of Cemu's interface is
+	// drawn over it.
+	//
+	// Unlike the screenshot this happens sixty times a second, so an
+	// implementation must not wait for the GPU. See VulkanRenderer's, which
+	// copies into a ring of buffers and reads one back a frame or two later.
+	// A backend that has not implemented it simply hands nothing over, and the
+	// shell sits on its "waiting" screen saying so.
+	virtual void HandleDualscreenFrame(LatteTextureView* texView, bool padView){}
+
 	virtual void DrawBackbufferQuad(LatteTextureView* texView, RendererOutputShader* shader, bool useLinearTexFilter,
 												sint32 imageX, sint32 imageY, sint32 imageWidth, sint32 imageHeight,
 												bool padView, bool clearBackground) = 0;

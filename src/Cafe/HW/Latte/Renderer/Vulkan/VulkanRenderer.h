@@ -205,6 +205,10 @@ public:
 
 	void HandleScreenshotRequest(LatteTextureView* texView, bool padView) override;
 
+	// Dualscreen. See VulkanRendererDualscreen.cpp -- the point of it is that
+	// it never waits for the GPU, which the screenshot above does on purpose.
+	void HandleDualscreenFrame(LatteTextureView* texView, bool padView) override;
+
 	void QueryMemoryInfo();
 	void QueryAvailableFormats();
 
@@ -655,6 +659,35 @@ private:
 
 	// command buffer, garbage collection, synchronization
 	static constexpr uint32 kCommandBufferPoolSize = 128;
+
+	// One frame of one screen on its way off the GPU. The copy is recorded into
+	// whichever command buffer is being filled, and the bytes are only read
+	// once that buffer has finished on its own -- so a frame arrives a frame or
+	// two late and nothing ever blocks waiting for it.
+	struct DualscreenReadback
+	{
+		VkBuffer buffer = VK_NULL_HANDLE;
+		VkDeviceMemory memory = VK_NULL_HANDLE;
+		void* mapped = nullptr;
+		size_t capacity = 0;
+		int width = 0;
+		int height = 0;
+		bool srgb = false;
+		uint64 commandBufferId = 0;
+		uint64 serial = 0;
+		bool pending = false;
+	};
+	// Three deep, the same as the shared memory at the other end: enough that a
+	// frame in flight never makes the next one wait, few enough that being
+	// behind shows up as dropped frames rather than as latency.
+	static constexpr size_t kDualscreenReadbackSlots = 3;
+	std::array<std::array<DualscreenReadback, kDualscreenReadbackSlots>, 2> m_dualscreenReadback{};
+	std::array<size_t, 2> m_dualscreenNextSlot{0, 0};
+	std::vector<uint32> m_dualscreenPixels;
+	bool m_dualscreenFormatWarned = false;
+	bool m_dualscreenHasBuffers = false;
+	void DualscreenDrain(size_t screenIndex);
+	void DualscreenReleaseBuffers();
 
 	size_t m_commandBufferIndex = 0; // current buffer being filled
 	size_t m_commandBufferSyncIndex = 0; // latest buffer that finished execution (updated on submit)

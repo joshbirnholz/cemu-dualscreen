@@ -10,6 +10,7 @@
 #include "audio/IAudioInputAPI.h"
 #include "config/ActiveSettings.h"
 #include "config/LaunchSettings.h"
+#include "DualscreenSession.h"
 #include "Cafe/TitleList/GameInfo.h"
 #include "Cafe/GraphicPack/GraphicPack2.h"
 #include "util/helpers/SystemException.h"
@@ -919,6 +920,19 @@ namespace CafeSystem
 	void LaunchForegroundTitle()
 	{
 		PPCTimer_waitForInit();
+		// Before the game starts, so the shell is connected by the time the
+		// first frame is drawn and has nothing to catch up on. A Wii U's own
+		// two screens; the renderer sends whatever size it actually has, and
+		// this is what the shell is told to expect.
+		DualscreenSession::SetSocketPath(LaunchSettings::GetDualscreenSocket());
+		DualscreenSession::instance().Start(1280, 720, 854, 480, 60.0);
+		if (DualscreenSession::instance().IsRunning() && !InputManager::instance().get_vpad_controller(0))
+		{
+			// The shell holds the GamePad, so there has to be one to hold --
+			// including on a Cemu whose input has never been configured, which
+			// is the normal state of one launched only as a shell's emulator.
+			InputManager::instance().set_controller(0, EmulatedController::Type::VPAD);
+		}
 		// start system
 		sSystemRunning = true;
 		WindowSystem::NotifyGameLoaded();
@@ -1067,6 +1081,10 @@ namespace CafeSystem
 	{
 		if(!sSystemRunning)
 			return;
+		// First: the shell should see the session end rather than the frames
+		// merely stop, and everything below here is about taking the game
+		// apart.
+		DualscreenSession::instance().Stop();
 		coreinit::OSSchedulerEnd();
 		Latte_Stop();
 		// reset Cafe OS userspace modules

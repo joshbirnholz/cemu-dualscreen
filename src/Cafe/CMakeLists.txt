@@ -542,6 +542,7 @@ if (ENABLE_VULKAN)
     HW/Latte/Renderer/Vulkan/VulkanQuery.cpp
     HW/Latte/Renderer/Vulkan/VulkanRendererCore.cpp
     HW/Latte/Renderer/Vulkan/VulkanRenderer.cpp
+    HW/Latte/Renderer/Vulkan/VulkanRendererDualscreen.cpp
     HW/Latte/Renderer/Vulkan/VulkanRenderer.h
     HW/Latte/Renderer/Vulkan/VulkanSurfaceCopy.cpp
     HW/Latte/Renderer/Vulkan/VulkanTextureReadback.h
@@ -647,6 +648,7 @@ endif()
 
 target_link_libraries(CemuCafe PRIVATE
 	CemuCommon
+  CemuDualscreen
   CemuGui
   ZArchive::zarchive
   imguiImpl
