@@ -89,9 +89,25 @@ namespace
 	glm::vec2 DualscreenStick(sint16 x, sint16 y)
 	{
 		// The shell sends libretro's range with y positive downwards; here y is
-		// positive up.
+		// positive up. It also sends the stick raw and undeadzoned by design --
+		// its own submit_input leaves that to whatever is on the other end,
+		// since a libretro core normally deadzones its own analog input. Cemu's
+		// own controllers never reach VPADRead un-deadzoned, because
+		// ControllerBase::apply_axis_setting handles it first; this is that same
+		// scaled radial deadzone (and the same 0.15 XInputController defaults
+		// to), so a stick at rest reads as centred here the way it would
+		// plugged into Cemu directly, rather than as the small constant
+		// deflection a real stick's resting position rarely lands exactly on.
 		constexpr float kRange = 32767.0f;
-		return {std::clamp(x / kRange, -1.0f, 1.0f), std::clamp(-y / kRange, -1.0f, 1.0f)};
+		constexpr float kDeadzone = 0.15f;
+		glm::vec2 axis{std::clamp(x / kRange, -1.0f, 1.0f), std::clamp(-y / kRange, -1.0f, 1.0f)};
+		const float len = glm::length(axis);
+		if (len < kDeadzone)
+			return {0.0f, 0.0f};
+		axis = glm::normalize(axis) * ((len - kDeadzone) / (1.0f - kDeadzone));
+		if (glm::length(axis) > 1.0f)
+			axis = glm::normalize(axis);
+		return axis;
 	}
 
 	void DualscreenTouch(VPADStatus_t& status, const ds::ExternalInput& pad, glm::ivec2& lastTouch)
