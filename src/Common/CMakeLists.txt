@@ -46,7 +46,13 @@ PRIVATE
 )
 endif()
 
-if(LINUX)
+# UNIX AND NOT APPLE rather than the built-in LINUX variable: LINUX only
+# exists from CMake 3.25 on, silently reading as false (not an error) below
+# that -- which this project's own cmake_minimum_required(3.21.1) allows --
+# so ELFSymbolTable.cpp went missing from the target with no warning at
+# configure time, only an undefined-reference link error from
+# ExceptionHandler_posix.cpp, which calls into it unconditionally.
+if(UNIX AND NOT APPLE)
 	target_sources(CemuCommon PRIVATE
 		ExceptionHandler/ELFSymbolTable.cpp
 		ExceptionHandler/ELFSymbolTable.h
