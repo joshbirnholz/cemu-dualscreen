@@ -63,32 +63,38 @@ void VulkanRenderer::DualscreenDrain(size_t screenIndex)
 
 		const size_t count = (size_t)slot.width * slot.height;
 		m_dualscreenPixels.resize(count);
+		// The gamma question is decided the same way Cemu's own output shader
+		// decides it (RendererOuputShader.cpp: outputShader() samples the raw
+		// texture and only conditionally applies sRGBEncode -- there is no
+		// decode the other way, since nothing here is ever sampled through an
+		// sRGB-tagged view). slot.srgb records whether these particular bytes
+		// were already gamma-encoded before this readback saw them: true for a
+		// source stored in an _SRGB-tagged format, false otherwise, packed
+		// 10:10:10:2 included, since Vulkan has no sRGB-tagged variant of it
+		// for a sampler to have auto-decoded.
+		const bool toRGB = slot.srgb && !dstUsesSRGB;
+		const bool toSRGB = !slot.srgb && dstUsesSRGB;
 		if (slot.packed_a2b10g10r10)
 		{
-			// A2B10G10R10_UNORM_PACK32 has no sRGB-tagged twin to compare
-			// against dstUsesSRGB the way RGBA8 does below -- there is nothing
-			// else here that says what encoding these bits are in besides the
-			// buffer's own flag, which is what chose dstUsesSRGB in the first
-			// place. So there is no second opinion to reconcile: read the ten
-			// bits down to eight and send them as they are.
 			const uint32* source = (const uint32*)slot.mapped;
 			for (size_t index = 0; index < count; ++index)
 			{
 				const uint32 packed = source[index];
-				const uint8 r = (uint8)((packed & 0x3FFu) >> 2);
-				const uint8 g = (uint8)(((packed >> 10) & 0x3FFu) >> 2);
-				const uint8 b = (uint8)(((packed >> 20) & 0x3FFu) >> 2);
+				uint8 r = (uint8)((packed & 0x3FFu) >> 2);
+				uint8 g = (uint8)(((packed >> 10) & 0x3FFu) >> 2);
+				uint8 b = (uint8)(((packed >> 20) & 0x3FFu) >> 2);
+				if (toSRGB)
+				{
+					r = RGBComponentToSRGB(r);
+					g = RGBComponentToSRGB(g);
+					b = RGBComponentToSRGB(b);
+				}
 				m_dualscreenPixels[index] = ((uint32)r << 16) | ((uint32)g << 8) | (uint32)b;
 			}
 		}
 		else
 		{
 			const uint8* source = (const uint8*)slot.mapped;
-			// RGBA8 in, XRGB8888 out. The gamma question is decided the same way
-			// Cemu's own screenshot decides it, so what crosses the link matches
-			// what is on the television here rather than being a second opinion.
-			const bool toRGB = slot.srgb && !dstUsesSRGB;
-			const bool toSRGB = !slot.srgb && dstUsesSRGB;
 			for (size_t index = 0; index < count; ++index)
 			{
 				uint8 r = source[index * 4 + 0];
@@ -222,20 +228,11 @@ void VulkanRenderer::HandleDualscreenFrame(LatteTextureView* texView, bool padVi
 	slot.width = width;
 	slot.height = height;
 	slot.packed_a2b10g10r10 = isPacked1010102;
-	if (isPacked1010102)
-	{
-		// No sRGB-tagged twin exists for this layout to read a hint off of, so
-		// there is nothing to reconcile against dstUsesSRGB in DualscreenDrain
-		// -- mark it equal, which is what tells that pass to leave the bits as
-		// they are.
-		const bool dstUsesSRGB =
-			padView ? LatteGPUState.drcBufferUsesSRGB : LatteGPUState.tvBufferUsesSRGB;
-		slot.srgb = dstUsesSRGB;
-	}
-	else
-	{
-		slot.srgb = (format == VK_FORMAT_R8G8B8A8_SRGB);
-	}
+	// No sRGB-tagged variant of A2B10G10R10_UNORM_PACK32 exists in Vulkan, so a
+	// sampler could never auto-decode one on read the way it would an
+	// _SRGB-tagged RGBA8 texture -- these bytes are exactly as raw as a plain
+	// R8G8B8A8_UNORM source, never pre-encoded.
+	slot.srgb = isPacked1010102 ? false : (format == VK_FORMAT_R8G8B8A8_SRGB);
 	// Both screens of one emulated frame share this, which is what stops the
 	// two devices showing halves of different moments.
 	slot.serial = LatteGPUState.frameCounter;
