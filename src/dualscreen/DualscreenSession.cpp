@@ -1,6 +1,7 @@
 #include "DualscreenSession.h"
 
 #include "Common/precompiled.h"
+#include "Cafe/HW/Latte/Core/Latte.h"
 
 #include <chrono>
 
@@ -100,6 +101,9 @@ void DualscreenSession::Start(int tvWidth, int tvHeight, int padWidth, int padHe
 	m_reportedFailure = false;
 	m_reportedPublishFailure = false;
 	m_reportedAudioFailure = false;
+	// A fresh connection has said nothing yet -- whatever a previous one last
+	// asked for does not carry over to this one.
+	m_requestedScreen.reset();
 	cemuLog_log(LogType::Force, "Dualscreen: handing screens over at {}", s_socketPath);
 }
 
@@ -110,6 +114,7 @@ void DualscreenSession::Stop()
 		return;
 	m_producer.close();
 	m_running = false;
+	m_requestedScreen.reset();
 	cemuLog_log(LogType::Force, "Dualscreen: session ended");
 }
 
@@ -140,7 +145,27 @@ void DualscreenSession::Poll()
 		cemuLog_log(LogType::Force, "Dualscreen: the shell went away: {}", error);
 		m_producer.close();
 		m_running = false;
+		m_requestedScreen.reset();
 		return;
+	}
+	// Whichever screen the shell asked for -- absent if it has asked for
+	// nothing, which is also true of a shell that has not connected past the
+	// handshake yet. This is the one thing HandleDualscreenFrame and the
+	// audio path gate their own work on (see ShouldCapture).
+	m_requestedScreen = m_producer.requested_screen();
+	// The only reason this end's own window should ever show anything but
+	// its usual default: the shell is watching the television, so something
+	// local has to show the other one instead. Nothing requested is left
+	// alone entirely -- whatever the player's own Alt+Tab/VPAD toggle or
+	// their own display setting already has it at, exactly as if no session
+	// existed at all.
+	if (m_requestedScreen == ds::ScreenId::Top)
+	{
+		LatteGPUState.isDRCPrimary = true;
+	}
+	else if (m_requestedScreen == ds::ScreenId::Bottom)
+	{
+		LatteGPUState.isDRCPrimary = false;
 	}
 	if (resetRequested)
 	{
@@ -157,6 +182,12 @@ void DualscreenSession::Poll()
 		cemuLog_log(LogType::Force, "Dualscreen: the shell asked for a reset, which is not "
 									"implemented yet");
 	}
+}
+
+bool DualscreenSession::ShouldCapture(ds::ScreenId screen)
+{
+	std::scoped_lock lock(m_mutex);
+	return m_running && m_requestedScreen == screen;
 }
 
 void DualscreenSession::PublishScreen(ds::ScreenId screen, uint64_t serial, const uint32_t* pixels,

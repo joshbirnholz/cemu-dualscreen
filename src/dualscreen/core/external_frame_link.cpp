@@ -521,6 +521,7 @@ bool ExternalFrameLink::handle_message(ExternalControl kind, const std::vector<u
             return false;
         case ExternalControl::Reset:
         case ExternalControl::Input:
+        case ExternalControl::RequestScreen:
             // Ours to send, not to receive.
             return true;
     }
@@ -599,6 +600,18 @@ void ExternalFrameLink::send_input(const ExternalInput& input) {
         sent_input_ = input;
         have_sent_input_ = true;
     }
+}
+
+void ExternalFrameLink::request_screen(std::optional<ScreenId> screen) {
+    std::vector<uint8_t> body;
+    // 0/1 for a screen, 2 for none -- ScreenId has no "none" of its own (see
+    // screen_id.hpp), so that has to be spelled out here rather than cast.
+    if (!screen.has_value()) {
+        body.push_back(2u);
+    } else {
+        body.push_back(*screen == ScreenId::Top ? 0u : 1u);
+    }
+    send_control(ExternalControl::RequestScreen, body);
 }
 
 // --- producer ---------------------------------------------------------------
@@ -787,6 +800,16 @@ bool ExternalFrameProducer::poll(bool& out_reset_requested, std::string* error) 
                 input_ = read_input(body.data());
                 have_input_ = true;
             }
+        } else if (kind == ExternalControl::RequestScreen) {
+            if (!body.empty()) {
+                if (body[0] == 0u) {
+                    requested_screen_ = ScreenId::Top;
+                } else if (body[0] == 1u) {
+                    requested_screen_ = ScreenId::Bottom;
+                } else {
+                    requested_screen_.reset();
+                }
+            }
         } else if (kind == ExternalControl::Shutdown) {
             if (error != nullptr) *error = "the far end ended the session";
             return false;
@@ -821,6 +844,7 @@ bool ExternalFrameLink::take_frame(ScreenId, ExternalFrame&) { return false; }
 void ExternalFrameLink::take_audio(ScreenId, std::vector<int16_t>& out) { out.clear(); }
 void ExternalFrameLink::request_reset() {}
 void ExternalFrameLink::send_input(const ExternalInput&) {}
+void ExternalFrameLink::request_screen(std::optional<ScreenId>) {}
 bool ExternalFrameLink::accept_peer(std::string*) { return false; }
 bool ExternalFrameLink::read_messages(std::string*) { return false; }
 bool ExternalFrameLink::handle_message(ExternalControl, const std::vector<uint8_t>&, std::string*) {

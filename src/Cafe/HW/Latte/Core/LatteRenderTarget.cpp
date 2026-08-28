@@ -17,6 +17,8 @@
 #include "input/InputManager.h"
 #include "Cafe/OS/libs/swkbd/swkbd.h"
 
+#include "DualscreenSession.h"
+
 uint32 prevScissorX = 0;
 uint32 prevScissorY = 0;
 uint32 prevScissorWidth = 0;
@@ -963,7 +965,12 @@ void LatteRenderTarget_copyToBackbuffer(LatteTextureView* textureView, bool isPa
 	cemu_assert(shader);
 	g_renderer->DrawBackbufferQuad(textureView, shader, filter==LatteTextureView::MagFilter::kLinear, imageX, imageY, imageWidth, imageHeight, isPadView, clearBackground);
 	g_renderer->HandleScreenshotRequest(textureView, isPadView);
-	g_renderer->HandleDualscreenFrame(textureView, isPadView);
+	// Only the screen a shell actually asked for -- see ShouldCapture(). A
+	// screen nobody asked for costs nothing here: no readback, no CPU
+	// conversion, no send.
+	if (DualscreenSession::instance().ShouldCapture(isPadView ? ds::ScreenId::Bottom
+	                                                            : ds::ScreenId::Top))
+		g_renderer->HandleDualscreenFrame(textureView, isPadView);
 	if (!g_renderer->ImguiBegin(!isPadView))
 		return;
 	swkbd_render(!isPadView);
@@ -1016,13 +1023,20 @@ void LatteRenderTarget_itHLECopyColorBufferToScanBuffer(MPTR colorBufferPtr, uin
 			// Nothing here draws a backbuffer nobody is showing, but the game
 			// still rendered this and a shell may still want it -- the
 			// pad-window check above is about Cemu's own separate window,
-			// which a Dualscreen session has no reason to need. Standing in
-			// for the two lines copyToBackbuffer always starts with: without
-			// them the texture this reads can be stale or not yet uploaded,
-			// since nothing else touched it this frame to say otherwise.
-			LatteTexture_UpdateDataToLatest(texView->baseTexture);
-			LatteTC_MarkTextureStillInUse(texView->baseTexture);
-			g_renderer->HandleDualscreenFrame(texView, true);
+			// which a Dualscreen session has no reason to need. Only worth
+			// doing any of this, though, when a shell has actually asked for
+			// this screen (see ShouldCapture): otherwise there is nothing
+			// here to freshen a texture for.
+			if (DualscreenSession::instance().ShouldCapture(ds::ScreenId::Bottom))
+			{
+				// Standing in for the two lines copyToBackbuffer always starts
+				// with: without them the texture HandleDualscreenFrame reads
+				// can be stale or not yet uploaded, since nothing else
+				// touched it this frame to say otherwise.
+				LatteTexture_UpdateDataToLatest(texView->baseTexture);
+				LatteTC_MarkTextureStillInUse(texView->baseTexture);
+				g_renderer->HandleDualscreenFrame(texView, true);
+			}
 		}
 	}
 	if (((renderTarget & RENDER_TARGET_TV) && !showDRC) || ((renderTarget & RENDER_TARGET_DRC) && showDRC))

@@ -188,26 +188,32 @@ namespace snd_core
 		{
 			if(g_tvAudio)
 			{
-				// While a shell is connected, it is the one deciding where this
-				// plays -- Top, Bottom, Both or Off, chosen per screen on its own
-				// menu. Feeding it to Cemu's own device too would make that
-				// choice a lie: the game would keep coming out of this machine's
-				// speakers regardless of what the shell's own audio target said,
-				// which is exactly the doubled, uncontrollable TV audio a session
-				// is supposed to replace. Same reasoning as suppressing Cemu's own
-				// controllers for a Dualscreen pad in VPADController.cpp.
-				if (!DualscreenSession::instance().IsRunning())
+				// While a shell has actually asked for this screen, it is the
+				// one deciding where the sound plays -- Top, Bottom, Both or
+				// Off, chosen per screen on its own menu. Feeding it to
+				// Cemu's own device too would make that choice a lie: the
+				// game would keep coming out of this machine's speakers
+				// regardless of what the shell's own audio target said,
+				// which is exactly the doubled, uncontrollable TV audio a
+				// session is supposed to replace. A screen nobody asked for
+				// is the opposite case -- Cemu's own window is showing it,
+				// so this machine's speakers are exactly where its sound
+				// belongs, same as an ordinary run with no shell at all.
+				// Same reasoning as suppressing Cemu's own controllers for a
+				// Dualscreen pad in VPADController.cpp.
+				const bool wanted = DualscreenSession::instance().ShouldCapture(ds::ScreenId::Top);
+				if (!wanted)
 				{
 					g_tvAudio->FeedBlock(tempTVChannelData);
 				}
-				// The same block, handed to Dualscreen too. Only when it is
-				// genuinely interleaved stereo, which is what the link carries
-				// and what Cemu's own default (tv_channels = kStereo) produces --
-				// a player who has switched TV audio to mono or surround gets
-				// silence over the link rather than a guess at downmixing six
-				// channels blind.
-				if (channels == 2)
+				else if (channels == 2)
 				{
+					// Only when it is genuinely interleaved stereo, which is
+					// what the link carries and what Cemu's own default
+					// (tv_channels = kStereo) produces -- a player who has
+					// switched TV audio to mono or surround gets silence
+					// over the link rather than a guess at downmixing six
+					// channels blind.
 					DualscreenSession::instance().SendAudio(
 						ds::ScreenId::Top, tempTVChannelData,
 						AX_SAMPLES_PER_3MS_48KHZ * AX_FRAMES_PER_GROUP);
@@ -357,17 +363,19 @@ namespace snd_core
 		{
 			if (g_padAudio)
 			{
-				// Same reasoning as the TV path above -- while a shell is
-				// connected it owns where this plays, not this machine's own
-				// Pad output device.
-				if (!DualscreenSession::instance().IsRunning())
+				// Same reasoning as the TV path above -- while a shell has
+				// actually asked for this screen it owns where the sound
+				// plays, not this machine's own Pad output device; a screen
+				// nobody asked for plays right here instead, tagged as the
+				// GamePad's own stream when it is sent so a shell can route
+				// it separately from the TV's -- see the other SendAudio
+				// call above.
+				const bool wanted = DualscreenSession::instance().ShouldCapture(ds::ScreenId::Bottom);
+				if (!wanted)
 				{
 					g_padAudio->FeedBlock(tempDRCChannelData);
 				}
-				// The same block, handed to Dualscreen too, tagged as the
-				// GamePad's own stream so a shell can route it separately
-				// from the TV's -- see the other SendAudio call above.
-				if (channels == 2)
+				else if (channels == 2)
 				{
 					DualscreenSession::instance().SendAudio(
 						ds::ScreenId::Bottom, tempDRCChannelData,

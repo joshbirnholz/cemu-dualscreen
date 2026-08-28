@@ -3,6 +3,7 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -74,6 +75,12 @@ enum class ExternalControl : uint8_t {
     Reset = 4,     // consumer -> producer, the player chose Reset Game
     Shutdown = 5,  // either way, "this session is over"
     Input = 6,     // consumer -> producer, an ExternalInput
+    // consumer -> producer, "capture and send me this screen (or neither)" --
+    // sendable at any point in a session, not just at connect, since what a
+    // shell wants can change as devices come and go. Absent means the
+    // producer's own screen(s) are its own business again: nothing captured,
+    // nothing streamed, exactly like running without a shell attached at all.
+    RequestScreen = 7,
 };
 
 // A GamePad, in its own terms rather than this app's. What crosses this link is
@@ -208,6 +215,14 @@ public:
     // merged. Sent only when it differs from what was sent last, so a session
     // where nothing is being pressed costs nothing.
     void send_input(const ExternalInput& input);
+    // Tells the producer which single screen, if any, this end actually
+    // wants captured right now. A producer with a native display of its own
+    // (a Wii U's Cemu, showing whichever screen this does not ask for in its
+    // own window) uses this to avoid paying for a screen nobody is watching
+    // through the link at all -- so this is worth sending every time what is
+    // wanted changes, including down to nothing when there is nowhere local
+    // to show it.
+    void request_screen(std::optional<ScreenId> screen);
 
     // Where a producer connects when nobody said otherwise. Under the user's
     // runtime directory rather than /tmp, so two people on one machine do not
@@ -277,6 +292,11 @@ public:
     bool have_input() const { return have_input_; }
     const ExternalInput& input() const { return input_; }
 
+    // Which single screen the consumer has most recently asked for, if any --
+    // updated as of the last poll(). Absent means either nothing has been
+    // asked for yet or the consumer explicitly asked for nothing.
+    std::optional<ScreenId> requested_screen() const { return requested_screen_; }
+
 private:
     ExternalSharedHeader* header() { return static_cast<ExternalSharedHeader*>(memory_); }
 
@@ -287,6 +307,7 @@ private:
     std::vector<uint8_t> inbox_;
     ExternalInput input_;
     bool have_input_ = false;
+    std::optional<ScreenId> requested_screen_;
 };
 
 }  // namespace ds

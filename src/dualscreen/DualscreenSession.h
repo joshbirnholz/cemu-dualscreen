@@ -2,6 +2,7 @@
 
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 
 #include "core/external_frame_link.hpp"
@@ -37,8 +38,21 @@ public:
 	bool IsRunning();
 
 	// Reads whatever the shell has sent and notices it going away. Cheap, and
-	// safe to call more than once a frame.
+	// safe to call more than once a frame. Also where the shell's most recent
+	// screen request (see ShouldCapture) is picked up and, when it asks for
+	// the television, where this end's own window is switched to the GamePad
+	// -- the shell showing the television is the only reason this end would
+	// ever need to show anything else.
 	void Poll();
+
+	// Whether this screen is the one the shell has actually asked to be sent
+	// right now -- the one thing HandleDualscreenFrame and the audio path
+	// need to know before doing any work at all. False for both screens is
+	// the ordinary state of a run nothing has connected to yet, and for
+	// whichever screen a connected shell is not currently watching: nothing
+	// is captured, converted, or sent for it, the same as if no session
+	// existed. See core/external_frame_link.hpp's RequestScreen.
+	bool ShouldCapture(ds::ScreenId screen);
 
 	// One screen, already XRGB8888 and tightly packed. Both screens of one
 	// frame must go under the same serial or the two devices can show halves
@@ -68,6 +82,11 @@ private:
 	bool m_running = false;
 	int m_padWidth = 0;
 	int m_padHeight = 0;
+	// The screen the shell most recently asked for, updated from Poll().
+	// Absent means either nothing has connected yet or a connected shell
+	// explicitly asked for nothing -- both look the same from here: capture
+	// and send neither screen.
+	std::optional<ds::ScreenId> m_requestedScreen;
 	// Said once rather than every frame: a session that cannot connect is a
 	// normal way to run, and a session that keeps failing is one line of
 	// explanation, not a log.
