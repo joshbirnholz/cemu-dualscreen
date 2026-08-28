@@ -848,12 +848,16 @@ VulkanRenderer::VulkanRenderer() : Renderer(RendererAPI::Vulkan)
 	RendererShaderVk::Init(); // shaders
 	PipelineCompiler::CompileThreadPool_Start(); // pipelines
 
-	// Only for a run that could ever have a session -- the socket path is
-	// fixed for the process at launch, from --dualscreen-socket, so this
-	// does not change later. See VulkanRendererDualscreen.cpp for what the
-	// thread itself is for.
-	if (DualscreenSession::IsEnabled())
-		m_dualscreenThread = std::thread(&VulkanRenderer::DualscreenThreadMain, this);
+	// Unconditional, not gated on DualscreenSession::IsEnabled(): the
+	// renderer is created once for the main window at startup, before a
+	// title is chosen, while the socket path is only set later by
+	// LaunchForegroundTitle() when one actually launches. Gating this here
+	// would mean it never sees the socket path in time and never starts.
+	// DualscreenThreadMain() itself checks IsRunning() and idles cheaply
+	// when there is nothing to drain, so starting it unconditionally costs
+	// nothing on a run that never uses Dualscreen. See
+	// VulkanRendererDualscreen.cpp for what the thread itself is for.
+	m_dualscreenThread = std::thread(&VulkanRenderer::DualscreenThreadMain, this);
 }
 
 VulkanRenderer::~VulkanRenderer()
