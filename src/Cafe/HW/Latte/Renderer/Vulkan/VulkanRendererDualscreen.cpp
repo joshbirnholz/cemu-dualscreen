@@ -217,10 +217,22 @@ void VulkanRenderer::HandleDualscreenFrame(LatteTextureView* texView, bool padVi
 	region.imageOffset = {0, 0, 0};
 	region.imageExtent = {(uint32)width, (uint32)height, 1};
 
+	// TRANSFER_SRC_OPTIMAL, not GENERAL: this texture's resting layout
+	// (GetDefaultLayout(), below) is already the least-constrained one Cemu
+	// has -- GENERAL itself, or VK_IMAGE_LAYOUT_ATTACHMENT_FEEDBACK_LOOP_OPTIMAL_EXT
+	// on hardware that supports it, chosen there because a Wii U render
+	// target moves between being written and being sampled with no layout
+	// transition Cemu wants to pay for on every such switch. Sending it
+	// through GENERAL for a plain read-only copy source is a step backwards
+	// from either: GENERAL disables the compression a real render target
+	// otherwise keeps, and the feedback-loop layout is already sample-safe
+	// without it. TextureReadbackVk.cpp's readback -- Cemu's own screenshot
+	// path, doing the same copy -- already uses TRANSFER_SRC_OPTIMAL for
+	// exactly this reason.
 	barrier_image<IMAGE_WRITE | TRANSFER_WRITE, TRANSFER_READ>(baseImageTex, region.imageSubresource,
-															   VK_IMAGE_LAYOUT_GENERAL);
+															   VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
 	vkCmdCopyImageToBuffer(m_state.currentCommandBuffer, textureVk->m_image,
-						   VK_IMAGE_LAYOUT_GENERAL, slot.buffer, 1, &region);
+						   VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, slot.buffer, 1, &region);
 	barrier_image<TRANSFER_READ, TRANSFER_WRITE | IMAGE_WRITE>(baseImageTex,
 															   region.imageSubresource,
 															   baseImageTex->GetDefaultLayout());
