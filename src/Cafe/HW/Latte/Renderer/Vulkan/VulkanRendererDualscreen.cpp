@@ -7,6 +7,7 @@
 #include "Cafe/HW/Latte/Core/LatteTexture.h"
 
 #include "DualscreenSession.h"
+#include "util/helpers/helpers.h"
 
 #include <chrono>
 
@@ -25,17 +26,28 @@
 // ready yet is simply not sent, and a slot still in flight when its turn comes
 // round again means this end is behind -- so that frame is dropped, which is
 // what the shell expects: it keeps showing the last one it was given.
+//
+// That covers the GPU side. The CPU side of a readback -- DualscreenDrain(),
+// unpacking whatever format the source was in -- turned out to have the same
+// problem for the opposite reason: on a discrete GPU, reading this buffer
+// from the CPU at all costs real time (measured upward of half a millisecond
+// a call), where it is close to free on an APU sharing memory with its GPU.
+// A title needing a real per-pixel unpack (packed_a2b10g10r10 -- Wind Waker
+// HD among them) pays that on every frame, and paying it inline on the GPU
+// thread, from HandleDualscreenFrame, made it Cemu's own frame pacing rather
+// than only Dualscreen's. m_dualscreenThread exists to own that instead, so
+// a slow readback costs Dualscreen a frame of latency, the same as the
+// ring buffer already tolerates, rather than costing Cemu a frame of
+// pacing.
 
 namespace
 {
-	// Temporary instrumentation: DualscreenSession's own probe cleared
-	// Poll()/PublishScreen()/SendAudio() of the ~750ms/s HandleDualscreenFrame
-	// itself was shown to cost -- none of them add up to more than a couple of
-	// percent of it. What is left inside that function is DualscreenDrain's
-	// per-pixel conversion loop and the handful of new-capture calls after it
-	// (buffer creation on first use, the barriers, the copy command itself).
-	// These three probes split those apart to find out which. Remove once
-	// that's answered.
+	// Temporary instrumentation, kept across the move to a background
+	// thread to confirm it actually worked: HandleDualscreenFrame ("tap")
+	// should now cost close to nothing on the GPU thread, with the readback
+	// cost showing up in PixelConvert on m_dualscreenThread instead, where a
+	// slow moment no longer competes with the game for the same thread.
+	// Remove once that's confirmed.
 	struct ScopedCallTiming
 	{
 		const char* label;
@@ -69,6 +81,24 @@ namespace
 
 void VulkanRenderer::DualscreenReleaseBuffers()
 {
+	// m_dualscreenThread reads a slot's mapped memory between it being marked
+	// pending and it clearing that flag again, with no lock around the
+	// memory itself -- only around the flag. Unmapping out from under a read
+	// still in flight is a real hazard, so this waits for every slot to be
+	// clear first. Normally instant: called either with the thread already
+	// joined (renderer teardown) or with a session that has already stopped,
+	// which is what stops anything from setting a slot pending again.
+	// Bounded all the same, since "normally" is not "always".
+	for (int guard = 0; guard < 1000; ++guard)
+	{
+		bool anyPending = false;
+		for (auto& ring : m_dualscreenReadback)
+			for (auto& slot : ring)
+				anyPending = anyPending || slot.pending.load(std::memory_order_acquire);
+		if (!anyPending)
+			break;
+		std::this_thread::sleep_for(std::chrono::milliseconds(1));
+	}
 	for (auto& ring : m_dualscreenReadback)
 	{
 		for (auto& slot : ring)
@@ -80,7 +110,16 @@ void VulkanRenderer::DualscreenReleaseBuffers()
 			}
 			if (slot.buffer != VK_NULL_HANDLE)
 				memoryManager->DeleteBuffer(slot.buffer, slot.memory);
-			slot = DualscreenReadback();
+			slot.buffer = VK_NULL_HANDLE;
+			slot.memory = VK_NULL_HANDLE;
+			slot.capacity = 0;
+			slot.width = 0;
+			slot.height = 0;
+			slot.srgb = false;
+			slot.packed_a2b10g10r10 = false;
+			slot.commandBufferId = 0;
+			slot.serial = 0;
+			slot.pending.store(false, std::memory_order_relaxed);
 		}
 	}
 	m_dualscreenNextSlot = {0, 0};
@@ -99,7 +138,7 @@ void VulkanRenderer::DualscreenDrain(size_t screenIndex)
 	for (size_t step = 0; step < ring.size(); ++step)
 	{
 		auto& slot = ring[(m_dualscreenNextSlot[screenIndex] + step) % ring.size()];
-		if (!slot.pending)
+		if (!slot.pending.load(std::memory_order_acquire))
 			continue;
 		if (!HasCommandBufferFinished(slot.commandBufferId))
 			break;
@@ -186,7 +225,31 @@ void VulkanRenderer::DualscreenDrain(size_t screenIndex)
 		}
 		DualscreenSession::instance().PublishScreen(screen, slot.serial, publishFrom, slot.width,
 													slot.height);
-		slot.pending = false;
+		// Release, pairing with the acquire load the GPU thread does before
+		// it reuses this slot: everything this call touched above must be
+		// visibly done before that thread can see the slot as free again.
+		slot.pending.store(false, std::memory_order_release);
+	}
+}
+
+void VulkanRenderer::DualscreenThreadMain()
+{
+	SetThreadName("DualscreenConv");
+	while (!m_dualscreenThreadShutdown.load(std::memory_order_acquire))
+	{
+		if (!DualscreenSession::instance().IsRunning())
+		{
+			std::this_thread::sleep_for(std::chrono::milliseconds(5));
+			continue;
+		}
+		DualscreenDrain(0);
+		DualscreenDrain(1);
+		// A short, fixed poll rather than anything tied to Cemu's own frame
+		// pacing -- this thread does not know that pacing and should not
+		// need to. A slot's own command-buffer-finished check inside
+		// DualscreenDrain is what actually decides whether there was
+		// anything to do this pass.
+		std::this_thread::sleep_for(std::chrono::milliseconds(1));
 	}
 }
 
@@ -208,15 +271,10 @@ void VulkanRenderer::HandleDualscreenFrame(LatteTextureView* texView, bool padVi
 	ScopedCallTiming tapTiming("tap", s_tapWindowStart, s_tapTotalMs, s_tapCalls);
 
 	const size_t screenIndex = padView ? 1 : 0;
-	// Whatever finished since last time goes over before anything new is
-	// started, so a screen's frames arrive in the order they were drawn.
-	{
-		static std::chrono::steady_clock::time_point s_drainWindowStart = std::chrono::steady_clock::now();
-		static double s_drainTotalMs = 0.0;
-		static int s_drainCalls = 0;
-		ScopedCallTiming drainTiming("Drain", s_drainWindowStart, s_drainTotalMs, s_drainCalls);
-		DualscreenDrain(screenIndex);
-	}
+	// Draining -- reading whatever finished since last time -- is
+	// m_dualscreenThread's job now, off this thread entirely. All this does
+	// is start the next capture, which is cheap: recording a copy and a
+	// couple of barriers, never waiting on anything.
 
 	auto texViewVk = (LatteTextureViewVk*)texView;
 	if (texViewVk->firstMip != 0)
@@ -253,7 +311,7 @@ void VulkanRenderer::HandleDualscreenFrame(LatteTextureView* texView, bool padVi
 	}
 
 	auto& slot = m_dualscreenReadback[screenIndex][m_dualscreenNextSlot[screenIndex]];
-	if (slot.pending)
+	if (slot.pending.load(std::memory_order_acquire))
 		return; // still in flight: this end is behind, so this frame is dropped
 
 	const size_t needed = (size_t)width * height * 4;
@@ -330,7 +388,10 @@ void VulkanRenderer::HandleDualscreenFrame(LatteTextureView* texView, bool padVi
 	// The buffer this copy was recorded into. Once it has finished for its own
 	// reasons, the bytes are there -- no fence of our own, and no waiting.
 	slot.commandBufferId = GetCurrentCommandBufferId();
-	slot.pending = true;
+	// Release, pairing with the acquire load m_dualscreenThread does before
+	// touching any of the fields above: everything this call wrote to the
+	// slot must be visible to that thread once it sees this.
+	slot.pending.store(true, std::memory_order_release);
 	m_dualscreenNextSlot[screenIndex] =
 		(m_dualscreenNextSlot[screenIndex] + 1) % kDualscreenReadbackSlots;
 

@@ -28,6 +28,8 @@
 
 #include "Cafe/HW/Latte/Core/LatteTiming.h" // vsync control
 
+#include "DualscreenSession.h"
+
 #include <cstdint>
 #include <glslang/Public/ShaderLang.h>
 
@@ -845,6 +847,13 @@ VulkanRenderer::VulkanRenderer() : Renderer(RendererAPI::Vulkan)
 	// start compilation threads
 	RendererShaderVk::Init(); // shaders
 	PipelineCompiler::CompileThreadPool_Start(); // pipelines
+
+	// Only for a run that could ever have a session -- the socket path is
+	// fixed for the process at launch, from --dualscreen-socket, so this
+	// does not change later. See VulkanRendererDualscreen.cpp for what the
+	// thread itself is for.
+	if (DualscreenSession::IsEnabled())
+		m_dualscreenThread = std::thread(&VulkanRenderer::DualscreenThreadMain, this);
 }
 
 VulkanRenderer::~VulkanRenderer()
@@ -852,6 +861,12 @@ VulkanRenderer::~VulkanRenderer()
 	SubmitCommandBuffer();
 	WaitDeviceIdle();
 	WaitCommandBufferFinished(GetCurrentCommandBufferId());
+	// Stopped and joined before releasing what it reads: the same reasoning
+	// as the wait above, extended to the CPU thread that reads a readback's
+	// mapped memory instead of the GPU that writes it.
+	m_dualscreenThreadShutdown.store(true, std::memory_order_release);
+	if (m_dualscreenThread.joinable())
+		m_dualscreenThread.join();
 	// After the device is idle, so nothing is still copying into them, and
 	// before it goes away, so the mapping does not outlive what it maps.
 	DualscreenReleaseBuffers();

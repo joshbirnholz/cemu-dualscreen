@@ -13,6 +13,8 @@
 #include "util/containers/flat_hash_map.hpp"
 #include "util/containers/robin_hood.h"
 
+#include <atomic>
+
 struct VkSupportedFormatInfo_t
 {
 	bool fmt_d24_unorm_s8_uint{};
@@ -679,7 +681,15 @@ private:
 		bool packed_a2b10g10r10 = false;
 		uint64 commandBufferId = 0;
 		uint64 serial = 0;
-		bool pending = false;
+		// Set by the GPU thread once a capture is recorded, cleared by
+		// m_dualscreenThread once it has finished reading the bytes that
+		// capture produced -- the one thing the two threads touch about the
+		// same slot without a lock around it. Atomic because that handoff is
+		// exactly what a plain bool gives no cross-thread guarantees for;
+		// every other field here is written by the GPU thread strictly
+		// before this is set and read by the readback thread strictly after
+		// it is seen set, so nothing else needs its own synchronization.
+		std::atomic<bool> pending{false};
 	};
 	// Three deep, the same as the shared memory at the other end: enough that a
 	// frame in flight never makes the next one wait, few enough that being
@@ -692,6 +702,20 @@ private:
 	bool m_dualscreenHasBuffers = false;
 	void DualscreenDrain(size_t screenIndex);
 	void DualscreenReleaseBuffers();
+	// The CPU-side half of a Dualscreen readback -- unpacking whatever format
+	// the source texture was in and copying it to where PublishScreen can
+	// find it -- turned out to cost far more on a discrete GPU than on an
+	// APU sharing memory with its GPU (some titles need a real per-pixel
+	// unpack; see DualscreenReadback::packed_a2b10g10r10). Doing it on the GPU
+	// thread, inline with HandleDualscreenFrame, made that cost Cemu's own
+	// frame pacing rather than only Dualscreen's. This thread owns
+	// DualscreenDrain() instead, for both screens, on its own schedule --
+	// started with the renderer when a session might use it and joined
+	// before it is torn down, alongside the rest of that thread's shutdown
+	// sequence in the destructor.
+	void DualscreenThreadMain();
+	std::thread m_dualscreenThread;
+	std::atomic<bool> m_dualscreenThreadShutdown{false};
 
 	size_t m_commandBufferIndex = 0; // current buffer being filled
 	size_t m_commandBufferSyncIndex = 0; // latest buffer that finished execution (updated on submit)
@@ -707,7 +731,11 @@ private:
 	}
 
 	uint64 m_numSubmittedCmdBuffers{};
-	uint64 m_countCommandBufferFinished{};
+	// Read from m_dualscreenThread via HasCommandBufferFinished(), in addition
+	// to its usual use on the thread that owns command buffer submission --
+	// atomic so that cross-thread read is well-defined instead of relying on
+	// x86's coherency guarantees to paper over a plain uint64.
+	std::atomic<uint64> m_countCommandBufferFinished{};
 
 	uint32 m_recordedDrawcalls{}; // number of drawcalls recorded into current command buffer
 	uint32 m_submitThreshold{}; // submit current buffer if recordedDrawcalls exceeds this number
