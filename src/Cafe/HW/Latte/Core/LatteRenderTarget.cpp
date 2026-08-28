@@ -965,6 +965,11 @@ void LatteRenderTarget_copyToBackbuffer(LatteTextureView* textureView, bool isPa
 	cemu_assert(shader);
 	g_renderer->DrawBackbufferQuad(textureView, shader, filter==LatteTextureView::MagFilter::kLinear, imageX, imageY, imageWidth, imageHeight, isPadView, clearBackground);
 	g_renderer->HandleScreenshotRequest(textureView, isPadView);
+	// Unconditional, unlike the capture below: ShouldCapture() only knows
+	// what Poll() last read off the link, so it has to run even when nothing
+	// is currently being captured, or a shell that starts asking for a
+	// screen after a quiet spell would never be noticed asking.
+	DualscreenSession::instance().Poll();
 	// Only the screen a shell actually asked for -- see ShouldCapture(). A
 	// screen nobody asked for costs nothing here: no readback, no CPU
 	// conversion, no send.
@@ -1023,10 +1028,15 @@ void LatteRenderTarget_itHLECopyColorBufferToScanBuffer(MPTR colorBufferPtr, uin
 			// Nothing here draws a backbuffer nobody is showing, but the game
 			// still rendered this and a shell may still want it -- the
 			// pad-window check above is about Cemu's own separate window,
-			// which a Dualscreen session has no reason to need. Only worth
-			// doing any of this, though, when a shell has actually asked for
-			// this screen (see ShouldCapture): otherwise there is nothing
-			// here to freshen a texture for.
+			// which a Dualscreen session has no reason to need. Polled here
+			// too, not just in the TV path below: relying on TV rendering to
+			// be what notices a shell newly asking for the GamePad would
+			// make that dependent on Cemu's own TV/DRC swap state, which has
+			// nothing to do with it.
+			DualscreenSession::instance().Poll();
+			// Only worth doing any of the rest, though, when a shell has
+			// actually asked for this screen (see ShouldCapture): otherwise
+			// there is nothing here to freshen a texture for.
 			if (DualscreenSession::instance().ShouldCapture(ds::ScreenId::Bottom))
 			{
 				// Standing in for the two lines copyToBackbuffer always starts

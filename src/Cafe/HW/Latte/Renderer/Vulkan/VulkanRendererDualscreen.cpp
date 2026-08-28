@@ -394,9 +394,4 @@ void VulkanRenderer::HandleDualscreenFrame(LatteTextureView* texView, bool padVi
 	slot.pending.store(true, std::memory_order_release);
 	m_dualscreenNextSlot[screenIndex] =
 		(m_dualscreenNextSlot[screenIndex] + 1) % kDualscreenReadbackSlots;
-
-	// Reading whatever the shell has sent, and noticing it going away. Twice a
-	// frame when both screens are drawn, which costs a syscall that finds
-	// nothing.
-	session.Poll();
 }
