@@ -78,6 +78,21 @@ void frame_message(ExternalControl kind, const std::vector<uint8_t>& body,
     out.insert(out.end(), body.begin(), body.end());
 }
 
+// Waits for the socket to accept more bytes, the write-side twin of
+// wait_readable below. Bounded for the same reason wait_readable is: a
+// consumer that has genuinely stopped draining should fail this send rather
+// than hang whoever called it forever.
+bool wait_writable(int fd, int milliseconds) {
+    pollfd waiting{};
+    waiting.fd = fd;
+    waiting.events = POLLOUT;
+    int ready = 0;
+    do {
+        ready = ::poll(&waiting, 1, milliseconds);
+    } while (ready < 0 && errno == EINTR);
+    return ready > 0;
+}
+
 bool write_all(int fd, const uint8_t* data, std::size_t size) {
     std::size_t sent = 0;
     while (sent < size) {
@@ -86,7 +101,22 @@ bool write_all(int fd, const uint8_t* data, std::size_t size) {
             sent += static_cast<std::size_t>(wrote);
             continue;
         }
-        if (wrote < 0 && (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK)) {
+        if (wrote < 0 && errno == EINTR) {
+            continue;
+        }
+        if (wrote < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+            // The kernel's send buffer is full, not gone -- wait for room
+            // rather than spinning a whole CPU core retrying send() until
+            // there is some, which is what this did before. That spin was
+            // self-defeating on a single machine running both ends of the
+            // link: it stole CPU time from the very process that would have
+            // drained the socket and freed the buffer, which made the
+            // backlog worse rather than riding it out, and did so while
+            // holding DualscreenSession's own lock -- which is why a single
+            // slow moment here was able to stall the render thread too.
+            if (!wait_writable(fd, 100)) {
+                return false;
+            }
             continue;
         }
         return false;
