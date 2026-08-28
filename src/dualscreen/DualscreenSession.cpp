@@ -2,9 +2,52 @@
 
 #include "Common/precompiled.h"
 
+#include <chrono>
+
 namespace
 {
 	std::string s_socketPath;
+
+	// Temporary instrumentation: everything here shares m_mutex with Poll()
+	// and PublishScreen(), both called on the GPU thread from
+	// HandleDualscreenFrame, and SendAudio(), called from Cemu's own audio
+	// thread -- so a slow moment in any one of them, while holding that
+	// lock, is a stall for whichever of the others wants it next.
+	// VulkanRendererDualscreen.cpp already has its own probe showing
+	// HandleDualscreenFrame itself costs far more than it should; this one
+	// narrows down which locked call is actually spending the time, and
+	// whether it is the lock wait or the work under it -- both are inside
+	// the timed span, since either explains a caller stalling. Remove once
+	// that's answered.
+	struct ScopedCallTiming
+	{
+		const char* label;
+		std::chrono::steady_clock::time_point started = std::chrono::steady_clock::now();
+		std::chrono::steady_clock::time_point& windowStart;
+		double& totalMs;
+		int& calls;
+		ScopedCallTiming(const char* label_, std::chrono::steady_clock::time_point& windowStart_,
+						 double& totalMs_, int& calls_)
+			: label(label_), windowStart(windowStart_), totalMs(totalMs_), calls(calls_)
+		{
+		}
+		~ScopedCallTiming()
+		{
+			const auto now = std::chrono::steady_clock::now();
+			totalMs += std::chrono::duration<double, std::milli>(now - started).count();
+			++calls;
+			const double windowSeconds = std::chrono::duration<double>(now - windowStart).count();
+			if (windowSeconds >= 1.0)
+			{
+				cemuLog_log(LogType::Force,
+							"Dualscreen: {} cost {:.1f}ms over {} calls in the last {:.2f}s", label,
+							totalMs, calls, windowSeconds);
+				windowStart = now;
+				totalMs = 0.0;
+				calls = 0;
+			}
+		}
+	};
 }
 
 DualscreenSession& DualscreenSession::instance()
@@ -78,6 +121,11 @@ bool DualscreenSession::IsRunning()
 
 void DualscreenSession::Poll()
 {
+	static std::chrono::steady_clock::time_point s_windowStart = std::chrono::steady_clock::now();
+	static double s_totalMs = 0.0;
+	static int s_calls = 0;
+	ScopedCallTiming timing("Poll", s_windowStart, s_totalMs, s_calls);
+
 	std::scoped_lock lock(m_mutex);
 	if (!m_running)
 		return;
@@ -114,6 +162,11 @@ void DualscreenSession::Poll()
 void DualscreenSession::PublishScreen(ds::ScreenId screen, uint64_t serial, const uint32_t* pixels,
 									  int width, int height)
 {
+	static std::chrono::steady_clock::time_point s_windowStart = std::chrono::steady_clock::now();
+	static double s_totalMs = 0.0;
+	static int s_calls = 0;
+	ScopedCallTiming timing("PublishScreen", s_windowStart, s_totalMs, s_calls);
+
 	std::scoped_lock lock(m_mutex);
 	if (!m_running || pixels == nullptr || width <= 0 || height <= 0)
 		return;
@@ -135,6 +188,11 @@ void DualscreenSession::PublishScreen(ds::ScreenId screen, uint64_t serial, cons
 
 void DualscreenSession::SendAudio(ds::ScreenId screen, const int16_t* interleavedStereo, size_t frames)
 {
+	static std::chrono::steady_clock::time_point s_windowStart = std::chrono::steady_clock::now();
+	static double s_totalMs = 0.0;
+	static int s_calls = 0;
+	ScopedCallTiming timing("SendAudio", s_windowStart, s_totalMs, s_calls);
+
 	std::scoped_lock lock(m_mutex);
 	if (!m_running || interleavedStereo == nullptr || frames == 0)
 		return;
