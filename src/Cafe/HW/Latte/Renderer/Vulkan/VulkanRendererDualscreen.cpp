@@ -26,6 +26,47 @@
 // round again means this end is behind -- so that frame is dropped, which is
 // what the shell expects: it keeps showing the last one it was given.
 
+namespace
+{
+	// Temporary instrumentation: DualscreenSession's own probe cleared
+	// Poll()/PublishScreen()/SendAudio() of the ~750ms/s HandleDualscreenFrame
+	// itself was shown to cost -- none of them add up to more than a couple of
+	// percent of it. What is left inside that function is DualscreenDrain's
+	// per-pixel conversion loop and the handful of new-capture calls after it
+	// (buffer creation on first use, the barriers, the copy command itself).
+	// These three probes split those apart to find out which. Remove once
+	// that's answered.
+	struct ScopedCallTiming
+	{
+		const char* label;
+		std::chrono::steady_clock::time_point started = std::chrono::steady_clock::now();
+		std::chrono::steady_clock::time_point& windowStart;
+		double& totalMs;
+		int& calls;
+		ScopedCallTiming(const char* label_, std::chrono::steady_clock::time_point& windowStart_,
+						 double& totalMs_, int& calls_)
+			: label(label_), windowStart(windowStart_), totalMs(totalMs_), calls(calls_)
+		{
+		}
+		~ScopedCallTiming()
+		{
+			const auto now = std::chrono::steady_clock::now();
+			totalMs += std::chrono::duration<double, std::milli>(now - started).count();
+			++calls;
+			const double windowSeconds = std::chrono::duration<double>(now - windowStart).count();
+			if (windowSeconds >= 1.0)
+			{
+				cemuLog_log(LogType::Force,
+							"Dualscreen: {} cost {:.1f}ms over {} calls in the last {:.2f}s", label,
+							totalMs, calls, windowSeconds);
+				windowStart = now;
+				totalMs = 0.0;
+				calls = 0;
+			}
+		}
+	};
+}
+
 void VulkanRenderer::DualscreenReleaseBuffers()
 {
 	for (auto& ring : m_dualscreenReadback)
@@ -76,45 +117,51 @@ void VulkanRenderer::DualscreenDrain(size_t screenIndex)
 		// for a sampler to have auto-decoded.
 		const bool toRGB = slot.srgb && !dstUsesSRGB;
 		const bool toSRGB = !slot.srgb && dstUsesSRGB;
-		if (slot.packed_a2b10g10r10)
 		{
-			const uint32* source = (const uint32*)slot.mapped;
-			for (size_t index = 0; index < count; ++index)
+			static std::chrono::steady_clock::time_point s_pixelWindowStart = std::chrono::steady_clock::now();
+			static double s_pixelTotalMs = 0.0;
+			static int s_pixelCalls = 0;
+			ScopedCallTiming pixelTiming("PixelConvert", s_pixelWindowStart, s_pixelTotalMs, s_pixelCalls);
+			if (slot.packed_a2b10g10r10)
 			{
-				const uint32 packed = source[index];
-				uint8 r = (uint8)((packed & 0x3FFu) >> 2);
-				uint8 g = (uint8)(((packed >> 10) & 0x3FFu) >> 2);
-				uint8 b = (uint8)(((packed >> 20) & 0x3FFu) >> 2);
-				if (toSRGB)
+				const uint32* source = (const uint32*)slot.mapped;
+				for (size_t index = 0; index < count; ++index)
 				{
-					r = RGBComponentToSRGB(r);
-					g = RGBComponentToSRGB(g);
-					b = RGBComponentToSRGB(b);
+					const uint32 packed = source[index];
+					uint8 r = (uint8)((packed & 0x3FFu) >> 2);
+					uint8 g = (uint8)(((packed >> 10) & 0x3FFu) >> 2);
+					uint8 b = (uint8)(((packed >> 20) & 0x3FFu) >> 2);
+					if (toSRGB)
+					{
+						r = RGBComponentToSRGB(r);
+						g = RGBComponentToSRGB(g);
+						b = RGBComponentToSRGB(b);
+					}
+					m_dualscreenPixels[index] = ((uint32)r << 16) | ((uint32)g << 8) | (uint32)b;
 				}
-				m_dualscreenPixels[index] = ((uint32)r << 16) | ((uint32)g << 8) | (uint32)b;
 			}
-		}
-		else
-		{
-			const uint8* source = (const uint8*)slot.mapped;
-			for (size_t index = 0; index < count; ++index)
+			else
 			{
-				uint8 r = source[index * 4 + 0];
-				uint8 g = source[index * 4 + 1];
-				uint8 b = source[index * 4 + 2];
-				if (toRGB)
+				const uint8* source = (const uint8*)slot.mapped;
+				for (size_t index = 0; index < count; ++index)
 				{
-					r = SRGBComponentToRGB(r);
-					g = SRGBComponentToRGB(g);
-					b = SRGBComponentToRGB(b);
+					uint8 r = source[index * 4 + 0];
+					uint8 g = source[index * 4 + 1];
+					uint8 b = source[index * 4 + 2];
+					if (toRGB)
+					{
+						r = SRGBComponentToRGB(r);
+						g = SRGBComponentToRGB(g);
+						b = SRGBComponentToRGB(b);
+					}
+					else if (toSRGB)
+					{
+						r = RGBComponentToSRGB(r);
+						g = RGBComponentToSRGB(g);
+						b = RGBComponentToSRGB(b);
+					}
+					m_dualscreenPixels[index] = ((uint32)r << 16) | ((uint32)g << 8) | (uint32)b;
 				}
-				else if (toSRGB)
-				{
-					r = RGBComponentToSRGB(r);
-					g = RGBComponentToSRGB(g);
-					b = RGBComponentToSRGB(b);
-				}
-				m_dualscreenPixels[index] = ((uint32)r << 16) | ((uint32)g << 8) | (uint32)b;
 			}
 		}
 		DualscreenSession::instance().PublishScreen(screen, slot.serial,
@@ -136,46 +183,21 @@ void VulkanRenderer::HandleDualscreenFrame(LatteTextureView* texView, bool padVi
 		return;
 	}
 
-	// Temporary instrumentation: two independent, real fixes to what this
-	// call does (a busy-spin on the control socket, then a compression-
-	// hostile copy layout) each measurably changed something without moving
-	// Cemu's own reported fps off half of native (30fps plain, 15fps with a
-	// session running), which means either the remaining cost really is in
-	// this function and is bigger than either fix, or the time is not being
-	// spent here at all and something this function merely triggers (the
-	// copy command actually executing on the GPU, later) is the real cost.
-	// This answers which, by clocking wall time actually spent inside this
-	// call -- summed for both screens, since they share a thread -- and
-	// logging it to Cemu's own log once a second. Remove once that question
-	// is answered.
-	struct DualscreenTiming
-	{
-		std::chrono::steady_clock::time_point started = std::chrono::steady_clock::now();
-		~DualscreenTiming()
-		{
-			static std::chrono::steady_clock::time_point s_windowStart = std::chrono::steady_clock::now();
-			static double s_totalMs = 0.0;
-			static int s_calls = 0;
-			const auto now = std::chrono::steady_clock::now();
-			s_totalMs += std::chrono::duration<double, std::milli>(now - started).count();
-			++s_calls;
-			const double windowSeconds = std::chrono::duration<double>(now - s_windowStart).count();
-			if (windowSeconds >= 1.0)
-			{
-				cemuLog_log(LogType::Force,
-							"Dualscreen: tap cost {:.1f}ms over {} calls in the last {:.2f}s",
-							s_totalMs, s_calls, windowSeconds);
-				s_windowStart = now;
-				s_totalMs = 0.0;
-				s_calls = 0;
-			}
-		}
-	} dualscreenTiming;
+	static std::chrono::steady_clock::time_point s_tapWindowStart = std::chrono::steady_clock::now();
+	static double s_tapTotalMs = 0.0;
+	static int s_tapCalls = 0;
+	ScopedCallTiming tapTiming("tap", s_tapWindowStart, s_tapTotalMs, s_tapCalls);
 
 	const size_t screenIndex = padView ? 1 : 0;
 	// Whatever finished since last time goes over before anything new is
 	// started, so a screen's frames arrive in the order they were drawn.
-	DualscreenDrain(screenIndex);
+	{
+		static std::chrono::steady_clock::time_point s_drainWindowStart = std::chrono::steady_clock::now();
+		static double s_drainTotalMs = 0.0;
+		static int s_drainCalls = 0;
+		ScopedCallTiming drainTiming("Drain", s_drainWindowStart, s_drainTotalMs, s_drainCalls);
+		DualscreenDrain(screenIndex);
+	}
 
 	auto texViewVk = (LatteTextureViewVk*)texView;
 	if (texViewVk->firstMip != 0)
