@@ -8,6 +8,8 @@
 
 #include "DualscreenSession.h"
 
+#include <chrono>
+
 // Handing the Wii U's two screens to Dualscreen, which puts them on two
 // machines. See src/dualscreen/README.md for what is on the other end.
 //
@@ -133,6 +135,42 @@ void VulkanRenderer::HandleDualscreenFrame(LatteTextureView* texView, bool padVi
 			DualscreenReleaseBuffers();
 		return;
 	}
+
+	// Temporary instrumentation: two independent, real fixes to what this
+	// call does (a busy-spin on the control socket, then a compression-
+	// hostile copy layout) each measurably changed something without moving
+	// Cemu's own reported fps off half of native (30fps plain, 15fps with a
+	// session running), which means either the remaining cost really is in
+	// this function and is bigger than either fix, or the time is not being
+	// spent here at all and something this function merely triggers (the
+	// copy command actually executing on the GPU, later) is the real cost.
+	// This answers which, by clocking wall time actually spent inside this
+	// call -- summed for both screens, since they share a thread -- and
+	// logging it to Cemu's own log once a second. Remove once that question
+	// is answered.
+	struct DualscreenTiming
+	{
+		std::chrono::steady_clock::time_point started = std::chrono::steady_clock::now();
+		~DualscreenTiming()
+		{
+			static std::chrono::steady_clock::time_point s_windowStart = std::chrono::steady_clock::now();
+			static double s_totalMs = 0.0;
+			static int s_calls = 0;
+			const auto now = std::chrono::steady_clock::now();
+			s_totalMs += std::chrono::duration<double, std::milli>(now - started).count();
+			++s_calls;
+			const double windowSeconds = std::chrono::duration<double>(now - s_windowStart).count();
+			if (windowSeconds >= 1.0)
+			{
+				cemuLog_log(LogType::Force,
+							"Dualscreen: tap cost {:.1f}ms over {} calls in the last {:.2f}s",
+							s_totalMs, s_calls, windowSeconds);
+				s_windowStart = now;
+				s_totalMs = 0.0;
+				s_calls = 0;
+			}
+		}
+	} dualscreenTiming;
 
 	const size_t screenIndex = padView ? 1 : 0;
 	// Whatever finished since last time goes over before anything new is
