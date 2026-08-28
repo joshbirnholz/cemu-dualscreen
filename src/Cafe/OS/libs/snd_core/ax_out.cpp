@@ -187,13 +187,24 @@ namespace snd_core
 		{
 			if(g_tvAudio)
 			{
-				g_tvAudio->FeedBlock(tempTVChannelData);
-				// The same block just fed to the real output device, handed to
-				// Dualscreen too. Only when it is genuinely interleaved stereo,
-				// which is what the link carries and what Cemu's own default
-				// (tv_channels = kStereo) produces -- a player who has switched
-				// TV audio to mono or surround gets silence over the link rather
-				// than a guess at downmixing six channels blind.
+				// While a shell is connected, it is the one deciding where this
+				// plays -- Top, Bottom, Both or Off, chosen per screen on its own
+				// menu. Feeding it to Cemu's own device too would make that
+				// choice a lie: the game would keep coming out of this machine's
+				// speakers regardless of what the shell's own audio target said,
+				// which is exactly the doubled, uncontrollable TV audio a session
+				// is supposed to replace. Same reasoning as suppressing Cemu's own
+				// controllers for a Dualscreen pad in VPADController.cpp.
+				if (!DualscreenSession::instance().IsRunning())
+				{
+					g_tvAudio->FeedBlock(tempTVChannelData);
+				}
+				// The same block, handed to Dualscreen too. Only when it is
+				// genuinely interleaved stereo, which is what the link carries
+				// and what Cemu's own default (tv_channels = kStereo) produces --
+				// a player who has switched TV audio to mono or surround gets
+				// silence over the link rather than a guess at downmixing six
+				// channels blind.
 				if (channels == 2)
 				{
 					DualscreenSession::instance().SendAudio(
@@ -342,7 +353,12 @@ namespace snd_core
 		tempDRCAudioBlockCounter++;
 		if (tempDRCAudioBlockCounter == AX_FRAMES_PER_GROUP)
 		{
-			if (g_padAudio)
+			// Same reasoning as the TV path above -- while a shell is connected
+			// it owns where this plays, not this machine's own Pad output
+			// device. DRC audio itself is not sent over the link yet (see
+			// dualscreen/README.md's "Not done yet"), so this only stops a
+			// second, uncontrollable copy; it does not yet add a controlled one.
+			if (g_padAudio && !DualscreenSession::instance().IsRunning())
 				g_padAudio->FeedBlock(tempDRCChannelData);
 
 			tempDRCAudioBlockCounter = 0;
