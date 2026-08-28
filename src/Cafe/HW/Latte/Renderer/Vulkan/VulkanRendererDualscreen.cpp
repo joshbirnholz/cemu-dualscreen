@@ -105,7 +105,6 @@ void VulkanRenderer::DualscreenDrain(size_t screenIndex)
 			break;
 
 		const size_t count = (size_t)slot.width * slot.height;
-		m_dualscreenPixels.resize(count);
 		// The gamma question is decided the same way Cemu's own output shader
 		// decides it (RendererOuputShader.cpp: outputShader() samples the raw
 		// texture and only conditionally applies sRGBEncode -- there is no
@@ -117,11 +116,29 @@ void VulkanRenderer::DualscreenDrain(size_t screenIndex)
 		// for a sampler to have auto-decoded.
 		const bool toRGB = slot.srgb && !dstUsesSRGB;
 		const bool toSRGB = !slot.srgb && dstUsesSRGB;
+		// Byte order R,G,B,0xff throughout -- what a real GPU-filled RGBA8
+		// texture already is, and what Dualscreen now expects a Wii U's
+		// screens to arrive as (see external_screen_source.cpp's
+		// upload_rgba8888()). The two conversions below still need doing
+		// (10-bit unpacking, gamma), but a title that needs neither -- the
+		// overwhelming common case -- no longer pays for a CPU pass over
+		// every pixel at all: measured at ~700ms of *every second* on a
+		// discrete GPU, where reading this readback buffer from the CPU
+		// turned out to be far slower than from an APU's shared memory.
+		// slot.mapped is already in the wire format then, so it goes
+		// straight to PublishScreen with no intermediate copy.
+		const uint32* publishFrom;
+		if (!slot.packed_a2b10g10r10 && !toRGB && !toSRGB)
+		{
+			publishFrom = (const uint32*)slot.mapped;
+		}
+		else
 		{
 			static std::chrono::steady_clock::time_point s_pixelWindowStart = std::chrono::steady_clock::now();
 			static double s_pixelTotalMs = 0.0;
 			static int s_pixelCalls = 0;
 			ScopedCallTiming pixelTiming("PixelConvert", s_pixelWindowStart, s_pixelTotalMs, s_pixelCalls);
+			m_dualscreenPixels.resize(count);
 			if (slot.packed_a2b10g10r10)
 			{
 				const uint32* source = (const uint32*)slot.mapped;
@@ -137,7 +154,8 @@ void VulkanRenderer::DualscreenDrain(size_t screenIndex)
 						g = RGBComponentToSRGB(g);
 						b = RGBComponentToSRGB(b);
 					}
-					m_dualscreenPixels[index] = ((uint32)r << 16) | ((uint32)g << 8) | (uint32)b;
+					m_dualscreenPixels[index] =
+						(uint32)r | ((uint32)g << 8) | ((uint32)b << 16) | (0xFFu << 24);
 				}
 			}
 			else
@@ -160,12 +178,13 @@ void VulkanRenderer::DualscreenDrain(size_t screenIndex)
 						g = RGBComponentToSRGB(g);
 						b = RGBComponentToSRGB(b);
 					}
-					m_dualscreenPixels[index] = ((uint32)r << 16) | ((uint32)g << 8) | (uint32)b;
+					m_dualscreenPixels[index] =
+						(uint32)r | ((uint32)g << 8) | ((uint32)b << 16) | (0xFFu << 24);
 				}
 			}
+			publishFrom = m_dualscreenPixels.data();
 		}
-		DualscreenSession::instance().PublishScreen(screen, slot.serial,
-													m_dualscreenPixels.data(), slot.width,
+		DualscreenSession::instance().PublishScreen(screen, slot.serial, publishFrom, slot.width,
 													slot.height);
 		slot.pending = false;
 	}
