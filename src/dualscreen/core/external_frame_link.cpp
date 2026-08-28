@@ -124,6 +124,47 @@ bool write_all(int fd, const uint8_t* data, std::size_t size) {
     return true;
 }
 
+// The producer's twin of write_all for Frame and Audio: messages that arrive
+// continuously, where the next one coming right behind makes a dropped one
+// unnoticeable, but waiting for one blocks whichever thread is producing the
+// game's picture and sound. That thread is Cemu's own render loop, so a slow
+// consumer must never be able to hold it up -- the whole reason the shared
+// memory this same call announces was designed to never wait, back in
+// VulkanRendererDualscreen.cpp. A blocking send() here would have undone
+// that even after the busy-spin above was fixed to a proper wait, since a
+// bounded wait is still a wait sitting on the same thread.
+//
+// Only a message that has not sent any bytes yet is safe to drop outright:
+// these are framed with a length prefix, so abandoning one partway through
+// would leave the consumer's parser expecting bytes that are never coming,
+// corrupting every message after it for the rest of the session. A write
+// already in progress is therefore still finished, bounded the same way
+// write_all is, rather than left to tear the stream.
+bool write_best_effort(int fd, const uint8_t* data, std::size_t size) {
+    std::size_t sent = 0;
+    while (sent < size) {
+        const ssize_t wrote = ::send(fd, data + sent, size - sent, MSG_NOSIGNAL);
+        if (wrote > 0) {
+            sent += static_cast<std::size_t>(wrote);
+            continue;
+        }
+        if (wrote < 0 && errno == EINTR) {
+            continue;
+        }
+        if (wrote < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+            if (sent == 0) {
+                return true;  // nothing committed to the stream yet: drop it and move on
+            }
+            if (!wait_writable(fd, 100)) {
+                return false;
+            }
+            continue;
+        }
+        return false;
+    }
+    return true;
+}
+
 // Reads whatever is there without waiting. False means the far end has gone.
 bool drain_socket(int fd, std::vector<uint8_t>& inbox, bool& closed) {
     closed = false;
@@ -338,7 +379,8 @@ void ExternalFrameLink::close() {
     have_info_ = false;
     info_ = ExternalStreamInfo();
     inbox_.clear();
-    audio_.clear();
+    audio_[0].clear();
+    audio_[1].clear();
     pending_[0] = Pending();
     pending_[1] = Pending();
     // A pad is only sent when it differs from the last one sent, so what was
@@ -457,15 +499,20 @@ bool ExternalFrameLink::handle_message(ExternalControl kind, const std::vector<u
             return true;
         }
         case ExternalControl::Audio: {
-            const std::size_t samples = body.size() / sizeof(int16_t);
-            const auto* data = reinterpret_cast<const int16_t*>(body.data());
-            audio_.insert(audio_.end(), data, data + samples);
+            if (body.empty()) {
+                return true;
+            }
+            const int index = body[0] == 0 ? 0 : 1;
+            const std::size_t samples = (body.size() - 1) / sizeof(int16_t);
+            const auto* data = reinterpret_cast<const int16_t*>(body.data() + 1);
+            auto& audio = audio_[index];
+            audio.insert(audio.end(), data, data + samples);
             // A consumer that stopped taking audio must not make this grow
             // without bound. A second of it is far more than any jitter.
             const std::size_t cap =
                 static_cast<std::size_t>(std::max(8000, info_.audio_sample_rate)) * 2;
-            if (audio_.size() > cap) {
-                audio_.erase(audio_.begin(), audio_.end() - static_cast<std::ptrdiff_t>(cap));
+            if (audio.size() > cap) {
+                audio.erase(audio.begin(), audio.end() - static_cast<std::ptrdiff_t>(cap));
             }
             return true;
         }
@@ -522,9 +569,10 @@ bool ExternalFrameLink::take_frame(ScreenId screen, ExternalFrame& out) {
     return false;
 }
 
-void ExternalFrameLink::take_audio(std::vector<int16_t>& out) {
-    out.swap(audio_);
-    audio_.clear();
+void ExternalFrameLink::take_audio(ScreenId screen, std::vector<int16_t>& out) {
+    auto& audio = audio_[ExternalSharedHeader::screen_index(screen)];
+    out.swap(audio);
+    audio.clear();
 }
 
 bool ExternalFrameLink::send_control(ExternalControl kind, const std::vector<uint8_t>& body) {
@@ -693,23 +741,25 @@ bool ExternalFrameProducer::publish(ScreenId screen, uint64_t serial, const uint
     put_u32(body, static_cast<uint32_t>((serial >> 32) & 0xFFFFFFFFu));
     std::vector<uint8_t> message;
     frame_message(ExternalControl::Frame, body, message);
-    if (!write_all(fd_, message.data(), message.size())) {
+    if (!write_best_effort(fd_, message.data(), message.size())) {
         if (error != nullptr) *error = "the far end has gone";
         return false;
     }
     return true;
 }
 
-bool ExternalFrameProducer::send_audio(const int16_t* interleaved_stereo, std::size_t frames,
-                                       std::string* error) {
+bool ExternalFrameProducer::send_audio(ScreenId screen, const int16_t* interleaved_stereo,
+                                       std::size_t frames, std::string* error) {
     if (fd_ < 0 || interleaved_stereo == nullptr || frames == 0) {
         return true;
     }
+    std::vector<uint8_t> body;
+    body.push_back(static_cast<uint8_t>(ExternalSharedHeader::screen_index(screen)));
     const auto* bytes = reinterpret_cast<const uint8_t*>(interleaved_stereo);
-    std::vector<uint8_t> body(bytes, bytes + frames * 2 * sizeof(int16_t));
+    body.insert(body.end(), bytes, bytes + frames * 2 * sizeof(int16_t));
     std::vector<uint8_t> message;
     frame_message(ExternalControl::Audio, body, message);
-    if (!write_all(fd_, message.data(), message.size())) {
+    if (!write_best_effort(fd_, message.data(), message.size())) {
         if (error != nullptr) *error = "the far end has gone";
         return false;
     }
@@ -768,7 +818,7 @@ bool ExternalFrameLink::poll(std::string* error) {
     return false;
 }
 bool ExternalFrameLink::take_frame(ScreenId, ExternalFrame&) { return false; }
-void ExternalFrameLink::take_audio(std::vector<int16_t>& out) { out.clear(); }
+void ExternalFrameLink::take_audio(ScreenId, std::vector<int16_t>& out) { out.clear(); }
 void ExternalFrameLink::request_reset() {}
 void ExternalFrameLink::send_input(const ExternalInput&) {}
 bool ExternalFrameLink::accept_peer(std::string*) { return false; }
@@ -789,7 +839,9 @@ bool ExternalFrameProducer::publish(ScreenId, uint64_t, const uint32_t*, int, in
                                     std::string*) {
     return false;
 }
-bool ExternalFrameProducer::send_audio(const int16_t*, std::size_t, std::string*) { return false; }
+bool ExternalFrameProducer::send_audio(ScreenId, const int16_t*, std::size_t, std::string*) {
+    return false;
+}
 bool ExternalFrameProducer::poll(bool& out_reset_requested, std::string*) {
     out_reset_requested = false;
     return false;

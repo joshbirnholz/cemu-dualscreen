@@ -38,8 +38,8 @@ Nothing in these files. The parts that are Cemu's own live where they belong:
 
 - `Cafe/HW/Latte/Renderer/` -- the frame tap and the readback that feeds it
 - `input/emulated/VPADController.cpp` -- taking the pad from the link
-- `OS/libs/snd_core/ax_out.cpp` -- sending TV audio and silencing Cemu's own
-  output while connected
+- `OS/libs/snd_core/ax_out.cpp` -- sending TV and GamePad audio as their own
+  streams and silencing Cemu's own output for both while connected
 - `Cafe/CafeSystem.cpp` -- starting and ending the session with the title
 - `config/LaunchSettings.cpp` -- `--dualscreen-socket`
 
@@ -72,15 +72,6 @@ Vulkan only. On OpenGL the frames are simply not handed over -- see
 
 ## Not done yet
 
-- **DRC (GamePad) audio.** TV audio reaches the link, from `ax_out.cpp`'s
-  `AIInitDMA`, and while a shell is connected Cemu's own TV audio device
-  (`g_tvAudio`) is silenced in favour of it -- otherwise the game would keep
-  coming out of this machine's speakers regardless of where the shell's own
-  audio target said it should play. A Wii U's second audio stream, the one
-  meant for the GamePad's own speaker, is a separate AX device (`g_padAudio`)
-  the link does not carry -- it is silenced the same way while connected (so
-  it is not a second, uncontrollable copy of nothing anyone chose) but has
-  nowhere to go yet, since the link only carries one stream today.
 - **Reset.** The shell's Reset button arrives and is logged, deliberately not
   acted on. Handing the request from the GPU thread (where it arrives) to the
   main thread is buildable, the same way `CafeSystem::RequestRecreateCanvas()`

@@ -133,14 +133,14 @@ void DualscreenSession::PublishScreen(ds::ScreenId screen, uint64_t serial, cons
 	}
 }
 
-void DualscreenSession::SendAudio(const int16_t* interleavedStereo, size_t frames)
+void DualscreenSession::SendAudio(ds::ScreenId screen, const int16_t* interleavedStereo, size_t frames)
 {
 	std::scoped_lock lock(m_mutex);
 	if (!m_running || interleavedStereo == nullptr || frames == 0)
 		return;
 
 	std::string error;
-	if (!m_producer.send_audio(interleavedStereo, frames, &error))
+	if (!m_producer.send_audio(screen, interleavedStereo, frames, &error))
 	{
 		if (!m_reportedAudioFailure)
 		{

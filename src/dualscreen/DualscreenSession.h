@@ -46,7 +46,10 @@ public:
 	void PublishScreen(ds::ScreenId screen, uint64_t serial, const uint32_t* pixels, int width,
 					   int height);
 
-	void SendAudio(const int16_t* interleavedStereo, size_t frames);
+	// Tagged by screen: a Wii U's TV and GamePad audio are independent, and
+	// the shell routes each by whatever the player set that screen's own
+	// audio target to.
+	void SendAudio(ds::ScreenId screen, const int16_t* interleavedStereo, size_t frames);
 
 	// The pad the shell is sending, if it is sending one. False means Cemu's
 	// own controllers are still in charge, which is how a run with no shell --

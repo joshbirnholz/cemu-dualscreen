@@ -10,6 +10,7 @@ namespace snd_core
 {
 	uint32 numProcessedFrames = 0;
 	bool s_dualscreenAudioChannelsWarned = false;
+	bool s_dualscreenDrcAudioChannelsWarned = false;
 
 	void resetNumProcessedFrames()
 	{
@@ -208,7 +209,8 @@ namespace snd_core
 				if (channels == 2)
 				{
 					DualscreenSession::instance().SendAudio(
-						tempTVChannelData, AX_SAMPLES_PER_3MS_48KHZ * AX_FRAMES_PER_GROUP);
+						ds::ScreenId::Top, tempTVChannelData,
+						AX_SAMPLES_PER_3MS_48KHZ * AX_FRAMES_PER_GROUP);
 				}
 				else if (!s_dualscreenAudioChannelsWarned)
 				{
@@ -353,13 +355,33 @@ namespace snd_core
 		tempDRCAudioBlockCounter++;
 		if (tempDRCAudioBlockCounter == AX_FRAMES_PER_GROUP)
 		{
-			// Same reasoning as the TV path above -- while a shell is connected
-			// it owns where this plays, not this machine's own Pad output
-			// device. DRC audio itself is not sent over the link yet (see
-			// dualscreen/README.md's "Not done yet"), so this only stops a
-			// second, uncontrollable copy; it does not yet add a controlled one.
-			if (g_padAudio && !DualscreenSession::instance().IsRunning())
-				g_padAudio->FeedBlock(tempDRCChannelData);
+			if (g_padAudio)
+			{
+				// Same reasoning as the TV path above -- while a shell is
+				// connected it owns where this plays, not this machine's own
+				// Pad output device.
+				if (!DualscreenSession::instance().IsRunning())
+				{
+					g_padAudio->FeedBlock(tempDRCChannelData);
+				}
+				// The same block, handed to Dualscreen too, tagged as the
+				// GamePad's own stream so a shell can route it separately
+				// from the TV's -- see the other SendAudio call above.
+				if (channels == 2)
+				{
+					DualscreenSession::instance().SendAudio(
+						ds::ScreenId::Bottom, tempDRCChannelData,
+						AX_SAMPLES_PER_3MS_48KHZ * AX_FRAMES_PER_GROUP);
+				}
+				else if (!s_dualscreenDrcAudioChannelsWarned)
+				{
+					s_dualscreenDrcAudioChannelsWarned = true;
+					cemuLog_log(LogType::Force,
+								"Dualscreen: GamePad audio is not stereo ({} channels), so it is "
+								"not being sent",
+								channels);
+				}
+			}
 
 			tempDRCAudioBlockCounter = 0;
 		}

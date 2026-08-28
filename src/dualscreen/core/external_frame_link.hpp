@@ -194,9 +194,13 @@ public:
 
     // The newest frame published for this screen since the last call, if any.
     bool take_frame(ScreenId screen, ExternalFrame& out);
-    // Audio sent since the last call, interleaved stereo. Drained rather than
-    // peeked: it is played once.
-    void take_audio(std::vector<int16_t>& out);
+    // Audio sent for this screen since the last call, interleaved stereo.
+    // Drained rather than peeked: it is played once. Tagged by screen for the
+    // same reason frames are: a Wii U's TV and GamePad each have their own
+    // independent audio, routed to wherever the player asked for that
+    // screen's sound to go -- mixing them into one stream here would make
+    // that choice impossible to honour on the far side.
+    void take_audio(ScreenId screen, std::vector<int16_t>& out);
     // Asks the producer to restart the game. Nothing happens here; only the
     // producer knows what restarting means.
     void request_reset();
@@ -232,7 +236,7 @@ private:
     ExternalStreamInfo info_;
     bool have_info_ = false;
     std::vector<uint8_t> inbox_;
-    std::vector<int16_t> audio_;
+    std::vector<int16_t> audio_[2];
     Pending pending_[2];
     ExternalInput sent_input_;
     bool have_sent_input_ = false;
@@ -257,7 +261,10 @@ public:
     // television from one frame beside the GamePad from another.
     bool publish(ScreenId screen, uint64_t serial, const uint32_t* pixels, int width, int height,
                  int stride_pixels, std::string* error);
-    bool send_audio(const int16_t* interleaved_stereo, std::size_t frames, std::string* error);
+    // Tagged by screen: a Wii U's TV and GamePad audio are independent
+    // streams a player can route separately, so they cross the link as two.
+    bool send_audio(ScreenId screen, const int16_t* interleaved_stereo, std::size_t frames,
+                    std::string* error);
 
     // Whether the consumer has asked for a reset since the last call, and
     // whether it has gone away.
