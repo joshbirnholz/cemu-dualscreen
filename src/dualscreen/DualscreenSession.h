@@ -17,9 +17,16 @@
 // CemuCafe because CemuInput needs it too and CemuCafe already depends on
 // CemuInput -- putting it the other way round would be a cycle.
 //
-// Everything is behind one lock. The renderer publishes from the render thread
-// and the pad is read from another, both about once a frame, so contention is
-// not a concern and the alternative is a lock-free scheme nobody can check.
+// Everything is behind one lock, because m_producer is one object with no
+// locking of its own and four different threads reach it: Poll() and
+// PublishScreen() from the GPU thread and the background readback thread
+// (m_dualscreenThread in VulkanRendererDualscreen.cpp) roughly once a frame
+// each, ReadInput() from wherever VPADRead ends up (game-controlled, and
+// sometimes far faster than once a frame), and SendAudio() from Cemu's own
+// audio thread every few milliseconds. That last one is the one of these
+// that actually matters: a real-time audio callback stalling on a lock held
+// by any of the others is a stutter or a cutout, not just a late frame -- see
+// SendAudio()'s own comment for how it avoids that without a second lock.
 class DualscreenSession
 {
 public:
@@ -62,7 +69,15 @@ public:
 
 	// Tagged by screen: a Wii U's TV and GamePad audio are independent, and
 	// the shell routes each by whatever the player set that screen's own
-	// audio target to.
+	// audio target to. Never blocks: called from Cemu's own real-time audio
+	// thread, where waiting on m_mutex would be heard as a stutter in
+	// whichever screen's sound this machine is still playing locally, or a
+	// gap in the buffer this same call is what feeds the shell. If the lock
+	// is held by Poll() or PublishScreen() right now, this block is skipped
+	// rather than waited for -- the same "drop it, the next one right behind
+	// makes it unnoticeable" call this link already makes for Frame and
+	// Audio messages on the wire, just made one level up, before there is
+	// even a message to drop.
 	void SendAudio(ds::ScreenId screen, const int16_t* interleavedStereo, size_t frames);
 
 	// The pad the shell is sending, if it is sending one. False means Cemu's

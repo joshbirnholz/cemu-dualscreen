@@ -186,7 +186,15 @@ void DualscreenSession::Poll()
 
 bool DualscreenSession::ShouldCapture(ds::ScreenId screen)
 {
-	std::scoped_lock lock(m_mutex);
+	// try_to_lock, same reasoning as SendAudio(): this is called every 3ms
+	// from the audio thread (AIInitDMA/AIInitDRCDMA) as well as from the GPU
+	// thread, and a false here on the rare contended call costs one skipped
+	// video frame or one audio block played locally instead of sent -- both
+	// already-tolerated drops elsewhere on this link -- rather than stalling
+	// whichever thread asked.
+	std::unique_lock lock(m_mutex, std::try_to_lock);
+	if (!lock.owns_lock())
+		return false;
 	return m_running && m_requestedScreen == screen;
 }
 
@@ -224,8 +232,20 @@ void DualscreenSession::SendAudio(ds::ScreenId screen, const int16_t* interleave
 	static int s_calls = 0;
 	ScopedCallTiming timing("SendAudio", s_windowStart, s_totalMs, s_calls);
 
-	std::scoped_lock lock(m_mutex);
-	if (!m_running || interleavedStereo == nullptr || frames == 0)
+	if (interleavedStereo == nullptr || frames == 0)
+		return;
+
+	// try_to_lock rather than scoped_lock: this runs on Cemu's own real-time
+	// audio thread, and Poll() or PublishScreen() holding m_mutex for even a
+	// couple of milliseconds on the GPU thread or the readback thread would
+	// otherwise stall this call right along with them -- heard as a cutout in
+	// whichever screen's audio this machine is still playing locally, or a
+	// gap in the stream this call is what feeds the shell. One skipped block
+	// is about 12ms of this screen's sound, the same kind of drop Frame and
+	// Audio messages already tolerate on the wire for a link that fell
+	// behind -- unnoticeable next to what waiting for the lock would cost.
+	std::unique_lock lock(m_mutex, std::try_to_lock);
+	if (!lock.owns_lock() || !m_running)
 		return;
 
 	std::string error;
