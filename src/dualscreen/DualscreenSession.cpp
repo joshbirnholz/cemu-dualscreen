@@ -104,6 +104,8 @@ void DualscreenSession::Start(int tvWidth, int tvHeight, int padWidth, int padHe
 	// A fresh connection has said nothing yet -- whatever a previous one last
 	// asked for does not carry over to this one.
 	m_requestedScreen.reset();
+	m_runningAtomic.store(true, std::memory_order_relaxed);
+	m_requestedScreenAtomic.store(-1, std::memory_order_relaxed);
 	cemuLog_log(LogType::Force, "Dualscreen: handing screens over at {}", s_socketPath);
 }
 
@@ -115,6 +117,8 @@ void DualscreenSession::Stop()
 	m_producer.close();
 	m_running = false;
 	m_requestedScreen.reset();
+	m_runningAtomic.store(false, std::memory_order_relaxed);
+	m_requestedScreenAtomic.store(-1, std::memory_order_relaxed);
 	cemuLog_log(LogType::Force, "Dualscreen: session ended");
 }
 
@@ -146,6 +150,8 @@ void DualscreenSession::Poll()
 		m_producer.close();
 		m_running = false;
 		m_requestedScreen.reset();
+		m_runningAtomic.store(false, std::memory_order_relaxed);
+		m_requestedScreenAtomic.store(-1, std::memory_order_relaxed);
 		return;
 	}
 	// Whichever screen the shell asked for -- absent if it has asked for
@@ -153,6 +159,9 @@ void DualscreenSession::Poll()
 	// handshake yet. This is the one thing HandleDualscreenFrame and the
 	// audio path gate their own work on (see ShouldCapture).
 	m_requestedScreen = m_producer.requested_screen();
+	m_requestedScreenAtomic.store(
+		m_requestedScreen ? (*m_requestedScreen == ds::ScreenId::Top ? 0 : 1) : -1,
+		std::memory_order_relaxed);
 	// The only reason this end's own window should ever show anything but
 	// its usual default: the shell is watching the television, so something
 	// local has to show the other one instead. Nothing requested is left
@@ -186,16 +195,23 @@ void DualscreenSession::Poll()
 
 bool DualscreenSession::ShouldCapture(ds::ScreenId screen)
 {
-	// try_to_lock, same reasoning as SendAudio(): this is called every 3ms
-	// from the audio thread (AIInitDMA/AIInitDRCDMA) as well as from the GPU
-	// thread, and a false here on the rare contended call costs one skipped
-	// video frame or one audio block played locally instead of sent -- both
-	// already-tolerated drops elsewhere on this link -- rather than stalling
-	// whichever thread asked.
-	std::unique_lock lock(m_mutex, std::try_to_lock);
-	if (!lock.owns_lock())
+	// Lock-free, not try_to_lock. This used to fall back to false -- "not
+	// wanted" -- whenever m_mutex was merely contended, on the reasoning that
+	// a false here just costs one skipped video frame, the same as an
+	// already-tolerated drop elsewhere on this link. That reasoning does not
+	// hold for audio: AIInitDMA/AIInitDRCDMA read a false as "this machine's
+	// own screen, play it locally" rather than "send it to the shell",
+	// swapping the request_screen() and the m_mutex contention it is racing
+	// GPU-thread Poll()/PublishScreen() calls it happens every 3ms against
+	// (see this header's own comment on those two) into audible bleed: the
+	// requested screen's audio playing here too, in step with every stall.
+	// These two atomics mirror m_running/m_requestedScreen -- both written
+	// only under m_mutex, from Poll() -- so this answers without the lock at
+	// all rather than merely trying for it.
+	if (!m_runningAtomic.load(std::memory_order_relaxed))
 		return false;
-	return m_running && m_requestedScreen == screen;
+	const int requested = m_requestedScreenAtomic.load(std::memory_order_relaxed);
+	return requested == (screen == ds::ScreenId::Top ? 0 : 1);
 }
 
 void DualscreenSession::PublishScreen(ds::ScreenId screen, uint64_t serial, const uint32_t* pixels,

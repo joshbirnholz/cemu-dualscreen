@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -114,6 +115,13 @@ private:
 	// explicitly asked for nothing -- both look the same from here: capture
 	// and send neither screen.
 	std::optional<ds::ScreenId> m_requestedScreen;
+	// Lock-free mirrors of m_running/m_requestedScreen, written alongside them
+	// (under m_mutex, so still only ever from one thread at a time) and read
+	// by ShouldCapture() without the lock at all -- see that function's own
+	// comment for why. -1/0/1 rather than an atomic<optional<ScreenId>>,
+	// which is not itself lock-free on every platform this builds for.
+	std::atomic<bool> m_runningAtomic{false};
+	std::atomic<int> m_requestedScreenAtomic{-1};
 	// Said once rather than every frame: a session that cannot connect is a
 	// normal way to run, and a session that keeps failing is one line of
 	// explanation, not a log.
