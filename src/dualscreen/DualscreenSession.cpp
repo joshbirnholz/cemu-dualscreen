@@ -259,6 +259,20 @@ void DualscreenSession::SendAudio(ds::ScreenId screen, const int16_t* interleave
 	}
 }
 
+void DualscreenSession::SendRumble(bool active)
+{
+	// try_to_lock, same reasoning as SendAudio(): VPADController::update()
+	// calls this from wherever VPADRead's own polling runs, up to sixty
+	// times a second, and a false here on the rare contended call just
+	// means this particular tick's edge is caught on the next one -- cheap
+	// next to blocking whichever thread is asking.
+	std::unique_lock lock(m_mutex, std::try_to_lock);
+	if (!lock.owns_lock() || !m_running)
+		return;
+
+	m_producer.send_rumble(active);
+}
+
 bool DualscreenSession::ReadInput(ds::ExternalInput& out)
 {
 	std::scoped_lock lock(m_mutex);

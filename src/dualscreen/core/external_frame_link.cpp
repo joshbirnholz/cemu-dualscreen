@@ -397,6 +397,8 @@ void ExternalFrameLink::close() {
     // never part of.
     sent_input_ = ExternalInput();
     have_sent_input_ = false;
+    rumble_active_ = false;
+    have_new_rumble_ = false;
 }
 
 bool ExternalFrameLink::accept_peer(std::string* error) {
@@ -524,6 +526,14 @@ bool ExternalFrameLink::handle_message(ExternalControl kind, const std::vector<u
             }
             return true;
         }
+        case ExternalControl::Rumble: {
+            if (body.empty()) {
+                return true;
+            }
+            rumble_active_ = body[0] != 0u;
+            have_new_rumble_ = true;
+            return true;
+        }
         case ExternalControl::Shutdown:
             if (error != nullptr) *error = "the game closed";
             return false;
@@ -582,6 +592,15 @@ void ExternalFrameLink::take_audio(ScreenId screen, std::vector<int16_t>& out) {
     auto& audio = audio_[ExternalSharedHeader::screen_index(screen)];
     out.swap(audio);
     audio.clear();
+}
+
+bool ExternalFrameLink::take_rumble(bool& out_active) {
+    if (!have_new_rumble_) {
+        return false;
+    }
+    have_new_rumble_ = false;
+    out_active = rumble_active_;
+    return true;
 }
 
 bool ExternalFrameLink::send_control(ExternalControl kind, const std::vector<uint8_t>& body) {
@@ -740,6 +759,12 @@ void ExternalFrameProducer::close() {
     // its own controllers.
     input_ = ExternalInput();
     have_input_ = false;
+    // Same reasoning again: a motor that was on for a session now over is not
+    // a fact about the next one, and a fresh connection must be free to say
+    // "on" again from nothing rather than have that be a no-op because this
+    // remembered it from before.
+    sent_rumble_ = false;
+    have_sent_rumble_ = false;
 }
 
 bool ExternalFrameProducer::publish(ScreenId screen, uint64_t serial, const uint32_t* pixels,
@@ -815,6 +840,27 @@ bool ExternalFrameProducer::send_audio(ScreenId screen, const int16_t* interleav
     return true;
 }
 
+void ExternalFrameProducer::send_rumble(bool active) {
+    if (fd_ < 0) {
+        return;
+    }
+    if (have_sent_rumble_ && active == sent_rumble_) {
+        return;
+    }
+    std::vector<uint8_t> body;
+    body.push_back(active ? 1u : 0u);
+    std::vector<uint8_t> message;
+    frame_message(ExternalControl::Rumble, body, message);
+    // A drop here just means the edge is retried whenever this is next
+    // called with the same value -- same as a dropped Frame or Audio
+    // message, and unlike send_input() there is no reason to remember
+    // whether it actually reached the wire: this is called on every change
+    // regardless, not diffed against what was last delivered.
+    write_best_effort(fd_, message.data(), message.size());
+    sent_rumble_ = active;
+    have_sent_rumble_ = true;
+}
+
 bool ExternalFrameProducer::poll(bool& out_reset_requested, std::string* error) {
     out_reset_requested = false;
     if (fd_ < 0) {
@@ -881,6 +927,7 @@ void ExternalFrameLink::take_audio(ScreenId, std::vector<int16_t>& out) { out.cl
 void ExternalFrameLink::request_reset() {}
 void ExternalFrameLink::send_input(const ExternalInput&) {}
 void ExternalFrameLink::request_screen(std::optional<ScreenId>) {}
+bool ExternalFrameLink::take_rumble(bool&) { return false; }
 bool ExternalFrameLink::accept_peer(std::string*) { return false; }
 bool ExternalFrameLink::read_messages(std::string*) { return false; }
 bool ExternalFrameLink::handle_message(ExternalControl, const std::vector<uint8_t>&, std::string*) {
@@ -902,6 +949,7 @@ bool ExternalFrameProducer::publish(ScreenId, uint64_t, const uint32_t*, int, in
 bool ExternalFrameProducer::send_audio(ScreenId, const int16_t*, std::size_t, std::string*) {
     return false;
 }
+void ExternalFrameProducer::send_rumble(bool) {}
 bool ExternalFrameProducer::poll(bool& out_reset_requested, std::string*) {
     out_reset_requested = false;
     return false;

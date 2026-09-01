@@ -281,6 +281,10 @@ void VPADController::update()
 		lock.unlock();
 
 		stop_rumble();
+		// Forwarded unconditionally like the two calls below, not only on the
+		// edge into this state -- see DualscreenSession::SendRumble()'s own
+		// comment for why that is cheap.
+		DualscreenSession::instance().SendRumble(false);
 
 		return;
 	}
@@ -293,9 +297,15 @@ void VPADController::update()
 
 	const auto& it = m_rumble_queue.front();
 	if (it[m_parser])
+	{
 		start_rumble();
+		DualscreenSession::instance().SendRumble(true);
+	}
 	else
+	{
 		stop_rumble();
+		DualscreenSession::instance().SendRumble(false);
+	}
 
 	++m_parser;
 	if (m_parser >= it.size())

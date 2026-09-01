@@ -80,6 +80,18 @@ public:
 	// even a message to drop.
 	void SendAudio(ds::ScreenId screen, const int16_t* interleavedStereo, size_t frames);
 
+	// Tells the shell whether the GamePad's own motor is on right now, so it
+	// can forward that to whatever the player is actually holding. Cheap to
+	// call every time VPADController's own rumble state is read -- see
+	// VPADController::update() -- since it is a no-op on the wire whenever
+	// the value has not changed; see ExternalFrameProducer::send_rumble().
+	// Sent whenever a shell is connected at all, not gated on ShouldCapture
+	// the way video and audio are: the shell holds the GamePad's controls
+	// regardless of which screen it is currently showing (ReadInput() above
+	// is the same way), and a player's hands do not stop being the ones on
+	// the GamePad just because their eyes are on the television right now.
+	void SendRumble(bool active);
+
 	// The pad the shell is sending, if it is sending one. False means Cemu's
 	// own controllers are still in charge, which is how a run with no shell --
 	// or one whose shell has not spoken yet -- behaves. Asking and reading are

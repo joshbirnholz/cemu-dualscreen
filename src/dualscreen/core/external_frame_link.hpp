@@ -81,6 +81,14 @@ enum class ExternalControl : uint8_t {
     // producer's own screen(s) are its own business again: nothing captured,
     // nothing streamed, exactly like running without a shell attached at all.
     RequestScreen = 7,
+    // producer -> consumer, "the GamePad's motor is on/off". Sent on every
+    // change, never on a timer -- see ExternalFrameProducer::send_rumble().
+    // What the pattern behind it looks like once a real device plays a Wii U
+    // through this link (a bit sampled at up to 60Hz -- see VPADControlMotor)
+    // is the producer's own business; this link only ever carries the on/off
+    // edges, which is all a companion device standing in for the GamePad's
+    // one motor can act on anyway.
+    Rumble = 8,
 };
 
 // A GamePad, in its own terms rather than this app's. What crosses this link is
@@ -229,6 +237,16 @@ public:
     // to show it.
     void request_screen(std::optional<ScreenId> screen);
 
+    // The GamePad motor's state as of the last thing the producer sent, and
+    // whether anything new has arrived since the last call -- a one-shot,
+    // same shape as HostSession::take_video_error(), because what matters to
+    // a caller forwarding this onward is the edges, not the level: reading it
+    // as a level would mean redelivering "on" every poll for as long as it
+    // stays on, and a caller with its own "only send what changed" state
+    // (see HostSession::publish_rumble()) would have to reinvent this to
+    // undo that. False until a producer has said anything at all.
+    bool take_rumble(bool& out_active);
+
     // Where a producer connects when nobody said otherwise. Under the user's
     // runtime directory rather than /tmp, so two people on one machine do not
     // collide and nothing survives a reboot.
@@ -264,6 +282,8 @@ private:
     Pending pending_[2];
     ExternalInput sent_input_;
     bool have_sent_input_ = false;
+    bool rumble_active_ = false;
+    bool have_new_rumble_ = false;
 };
 
 // The producer: whatever is actually playing the game. Here so that the fork of
@@ -289,6 +309,16 @@ public:
     // streams a player can route separately, so they cross the link as two.
     bool send_audio(ScreenId screen, const int16_t* interleaved_stereo, std::size_t frames,
                     std::string* error);
+    // Tells the consumer whether the GamePad's motor is currently on. Sent
+    // only when it changed since the last call, the same "only what's new"
+    // shape send_input() and request_screen() already use -- a companion
+    // device standing in for the GamePad has nothing to gain from being told
+    // "still on" sixty times a second. Best-effort like publish()/send_audio()
+    // above rather than blocking like request_reset(): this is called from
+    // wherever the emulated pad's own rumble state changes, which on a real
+    // fork is driven by the game and must never be able to stall it waiting
+    // on a slow consumer.
+    void send_rumble(bool active);
 
     // Whether the consumer has asked for a reset since the last call, and
     // whether it has gone away.
@@ -317,6 +347,8 @@ private:
     ExternalInput input_;
     bool have_input_ = false;
     std::optional<ScreenId> requested_screen_;
+    bool sent_rumble_ = false;
+    bool have_sent_rumble_ = false;
 };
 
 }  // namespace ds
