@@ -213,7 +213,12 @@ public:
     void request_reset();
     // Hands the producer the pad, which on this side is both players' pads
     // merged. Sent only when it differs from what was sent last, so a session
-    // where nothing is being pressed costs nothing.
+    // where nothing is being pressed costs nothing. Never blocks the caller:
+    // this shares a poll loop with the audio this link hands onward, so a
+    // pad update waiting on a full send buffer would otherwise be heard as an
+    // audio cutout timed to whenever the pad moved. A send that cannot go out
+    // immediately is simply retried the next time the pad state is checked,
+    // same as a value that has not changed yet.
     void send_input(const ExternalInput& input);
     // Tells the producer which single screen, if any, this end actually
     // wants captured right now. A producer with a native display of its own
@@ -240,6 +245,10 @@ private:
     bool handle_message(ExternalControl kind, const std::vector<uint8_t>& body,
                         std::string* error);
     bool send_control(ExternalControl kind, const std::vector<uint8_t>& body);
+    // send_input()'s non-blocking twin -- see its definition for why sending
+    // a pad update can never be allowed to wait on this link's socket.
+    bool send_control_best_effort(ExternalControl kind, const std::vector<uint8_t>& body,
+                                  bool& out_sent);
     ExternalSharedHeader* header() { return static_cast<ExternalSharedHeader*>(memory_); }
 
     int listen_fd_ = -1;

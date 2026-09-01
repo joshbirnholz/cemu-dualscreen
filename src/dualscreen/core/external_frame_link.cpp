@@ -140,7 +140,14 @@ bool write_all(int fd, const uint8_t* data, std::size_t size) {
 // corrupting every message after it for the rest of the session. A write
 // already in progress is therefore still finished, bounded the same way
 // write_all is, rather than left to tear the stream.
-bool write_best_effort(int fd, const uint8_t* data, std::size_t size) {
+//
+// `out_sent`, when given, says whether this actually reached the wire --
+// distinct from the return value, which only reports whether the connection
+// is still alive. A caller with its own "only send what changed" state (see
+// send_input()) needs this to tell a genuine delivery from a drop; otherwise
+// a dropped update would be mistaken for a delivered one and never retried.
+bool write_best_effort(int fd, const uint8_t* data, std::size_t size, bool* out_sent = nullptr) {
+    if (out_sent != nullptr) *out_sent = false;
     std::size_t sent = 0;
     while (sent < size) {
         const ssize_t wrote = ::send(fd, data + sent, size - sent, MSG_NOSIGNAL);
@@ -162,6 +169,7 @@ bool write_best_effort(int fd, const uint8_t* data, std::size_t size) {
         }
         return false;
     }
+    if (out_sent != nullptr) *out_sent = true;
     return true;
 }
 
@@ -585,6 +593,28 @@ bool ExternalFrameLink::send_control(ExternalControl kind, const std::vector<uin
     return write_all(peer_fd_, message.data(), message.size());
 }
 
+// send_input()'s own twin of write_best_effort, for the same reason that one
+// exists: this app's poll loop is the one thread that both calls this (every
+// frame the pad has moved) and pumps the audio taken off this same link out
+// to a speaker or onward to a companion (see ExternalScreenSource's audio
+// callback). A pad update blocking on a full send buffer would stall that
+// audio right along with it -- heard as a cutout timed to whenever a stick or
+// button actually moved, which is exactly what a blocking write_all() here
+// used to risk. Unlike Frame and Audio, a dropped pad update cannot just be
+// left dropped: `out_sent` is what lets send_input() below tell a real
+// delivery from a drop, so a drop is retried rather than mistaken for sent.
+bool ExternalFrameLink::send_control_best_effort(ExternalControl kind,
+                                                  const std::vector<uint8_t>& body,
+                                                  bool& out_sent) {
+    out_sent = false;
+    if (peer_fd_ < 0) {
+        return false;
+    }
+    std::vector<uint8_t> message;
+    frame_message(kind, body, message);
+    return write_best_effort(peer_fd_, message.data(), message.size(), &out_sent);
+}
+
 void ExternalFrameLink::request_reset() { send_control(ExternalControl::Reset, {}); }
 
 void ExternalFrameLink::send_input(const ExternalInput& input) {
@@ -596,7 +626,13 @@ void ExternalFrameLink::send_input(const ExternalInput& input) {
     std::vector<uint8_t> body;
     body.reserve(kInputBytes);
     put_input(body, input);
-    if (send_control(ExternalControl::Input, body)) {
+    bool sent = false;
+    send_control_best_effort(ExternalControl::Input, body, sent);
+    // Only marked sent when it actually reached the wire -- a drop leaves
+    // sent_input_ stale, so the unchanged `input` above still reads as
+    // different next call and gets tried again rather than lost until the
+    // pad happens to move again.
+    if (sent) {
         sent_input_ = input;
         have_sent_input_ = true;
     }
