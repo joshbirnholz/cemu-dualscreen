@@ -126,6 +126,15 @@ private:
 	// normal way to run, and a session that keeps failing is one line of
 	// explanation, not a log.
 	bool m_reportedFailure = false;
-	bool m_reportedPublishFailure = false;
+	// Indexed by screen (Top: 0, Bottom: 1), not one shared flag -- a publish
+	// failure on one screen (the television, say, first to try a too-large
+	// frame right after a graphics pack loads) must not silence the other
+	// screen's own first failure later on (off-TV play switching the GamePad
+	// to mirror that same too-large picture, minutes into a session): that
+	// second failure is a different fact, on a different screen, and a shared
+	// flag made it invisible -- exactly what turned a one-line "cannot be
+	// carried: 3840x2160" into a mysteriously silent stuck picture the one
+	// time this mattered in practice.
+	bool m_reportedPublishFailure[2] = {false, false};
 	bool m_reportedAudioFailure = false;
 };

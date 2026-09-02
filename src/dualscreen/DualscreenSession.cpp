@@ -99,7 +99,8 @@ void DualscreenSession::Start(int tvWidth, int tvHeight, int padWidth, int padHe
 	m_padWidth = padWidth;
 	m_padHeight = padHeight;
 	m_reportedFailure = false;
-	m_reportedPublishFailure = false;
+	m_reportedPublishFailure[0] = false;
+	m_reportedPublishFailure[1] = false;
 	m_reportedAudioFailure = false;
 	// A fresh connection has said nothing yet -- whatever a previous one last
 	// asked for does not carry over to this one.
@@ -233,10 +234,12 @@ void DualscreenSession::PublishScreen(ds::ScreenId screen, uint64_t serial, cons
 		// than the shared memory holds, which is a property of how this Cemu is
 		// configured rather than of the link -- and if the socket has actually
 		// died, Poll() is what notices that.
-		if (!m_reportedPublishFailure)
+		const int index = (screen == ds::ScreenId::Top) ? 0 : 1;
+		if (!m_reportedPublishFailure[index])
 		{
-			m_reportedPublishFailure = true;
-			cemuLog_log(LogType::Force, "Dualscreen: not handing over a screen: {}", error);
+			m_reportedPublishFailure[index] = true;
+			cemuLog_log(LogType::Force, "Dualscreen: not handing over the {} screen: {}",
+						(screen == ds::ScreenId::Top) ? "TV" : "GamePad", error);
 		}
 	}
 }
