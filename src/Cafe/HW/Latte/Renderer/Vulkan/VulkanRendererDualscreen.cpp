@@ -33,12 +33,19 @@
 // from the CPU at all costs real time (measured upward of half a millisecond
 // a call), where it is close to free on an APU sharing memory with its GPU.
 // A title needing a real per-pixel unpack (packed_a2b10g10r10 -- Wind Waker
-// HD among them) pays that on every frame, and paying it inline on the GPU
-// thread, from HandleDualscreenFrame, made it Cemu's own frame pacing rather
-// than only Dualscreen's. m_dualscreenThread exists to own that instead, so
-// a slow readback costs Dualscreen a frame of latency, the same as the
-// ring buffer already tolerates, rather than costing Cemu a frame of
-// pacing.
+// HD among them) used to pay that on every frame -- measured on a discrete
+// GPU as an entire CPU core kept continuously busy, which is well past "a
+// slow readback" and squarely a reason Cemu's real-time audio thread could
+// end up starved of its own share of the machine. HandleDualscreenFrame now
+// does that conversion on the GPU instead, with a blit into
+// m_dualscreenConvert (see its own comment) immediately before the readback
+// copy, whenever the device supports it -- which on any GPU worth calling
+// discrete, it does. m_dualscreenThread and its CPU-side unpack are still
+// here as the fallback for whatever it does not: an unsupported device, or
+// this title's screens arriving in some format the blit path itself does
+// not handle. A slow readback there still only costs Dualscreen a frame of
+// latency, the same as the ring buffer already tolerates, rather than
+// costing Cemu a frame of pacing.
 
 namespace
 {
@@ -124,6 +131,111 @@ void VulkanRenderer::DualscreenReleaseBuffers()
 	}
 	m_dualscreenNextSlot = {0, 0};
 	m_dualscreenHasBuffers = false;
+
+	// Nothing else touches these -- unlike the readback buffers above, no
+	// wait is needed before freeing them.
+	for (auto& convert : m_dualscreenConvert)
+	{
+		if (convert.image != VK_NULL_HANDLE)
+			vkDestroyImage(m_logicalDevice, convert.image, nullptr);
+		if (convert.memory != VK_NULL_HANDLE)
+			vkFreeMemory(m_logicalDevice, convert.memory, nullptr);
+		convert = {};
+	}
+}
+
+bool VulkanRenderer::DualscreenBlitSupported()
+{
+	if (m_dualscreenBlitSupported.has_value())
+		return *m_dualscreenBlitSupported;
+
+	// Everything this needs blit conversion between: the packed format some
+	// titles' scan buffers use as a blit source, and both the UNORM and SRGB
+	// variants of RGBA8 as either side of a gamma-only conversion. Checked
+	// once and cached rather than every frame -- what a device supports does
+	// not change mid-session.
+	auto supportsSrc = [this](VkFormat format) {
+		VkFormatProperties props;
+		vkGetPhysicalDeviceFormatProperties(m_physicalDevice, format, &props);
+		return (props.optimalTilingFeatures & VK_FORMAT_FEATURE_BLIT_SRC_BIT) != 0;
+	};
+	auto supportsDst = [this](VkFormat format) {
+		VkFormatProperties props;
+		vkGetPhysicalDeviceFormatProperties(m_physicalDevice, format, &props);
+		return (props.optimalTilingFeatures & VK_FORMAT_FEATURE_BLIT_DST_BIT) != 0;
+	};
+	const bool supported = supportsSrc(VK_FORMAT_A2B10G10R10_UNORM_PACK32) &&
+						   supportsSrc(VK_FORMAT_R8G8B8A8_UNORM) && supportsDst(VK_FORMAT_R8G8B8A8_UNORM) &&
+						   supportsSrc(VK_FORMAT_R8G8B8A8_SRGB) && supportsDst(VK_FORMAT_R8G8B8A8_SRGB);
+	m_dualscreenBlitSupported = supported;
+	if (!supported)
+		cemuLog_log(LogType::Force,
+					"Dualscreen: this device cannot blit-convert a packed or gamma-mismatched "
+					"scan buffer, so that conversion will cost CPU time instead of GPU time");
+	return supported;
+}
+
+bool VulkanRenderer::EnsureDualscreenConvertImage(size_t screenIndex, int width, int height, bool srgb)
+{
+	auto& convert = m_dualscreenConvert[screenIndex];
+	if (convert.image != VK_NULL_HANDLE && convert.width == width && convert.height == height &&
+		convert.srgb == srgb)
+		return true;
+
+	if (convert.image != VK_NULL_HANDLE)
+		vkDestroyImage(m_logicalDevice, convert.image, nullptr);
+	if (convert.memory != VK_NULL_HANDLE)
+		vkFreeMemory(m_logicalDevice, convert.memory, nullptr);
+	convert = {};
+
+	VkImageCreateInfo imageInfo{};
+	imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+	imageInfo.format = srgb ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM;
+	imageInfo.extent = {(uint32)width, (uint32)height, 1};
+	imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+	imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+	imageInfo.arrayLayers = 1;
+	imageInfo.mipLevels = 1;
+	imageInfo.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+	imageInfo.imageType = VK_IMAGE_TYPE_2D;
+	imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+	imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+
+	if (vkCreateImage(m_logicalDevice, &imageInfo, nullptr, &convert.image) != VK_SUCCESS)
+	{
+		convert = {};
+		return false;
+	}
+
+	VkMemoryRequirements memRequirements;
+	vkGetImageMemoryRequirements(m_logicalDevice, convert.image, &memRequirements);
+
+	VkMemoryAllocateInfo allocInfo{};
+	allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+	allocInfo.allocationSize = memRequirements.size;
+	uint32 memIndex;
+	if (!memoryManager->FindMemoryType(memRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+									   memIndex))
+	{
+		vkDestroyImage(m_logicalDevice, convert.image, nullptr);
+		convert = {};
+		return false;
+	}
+	allocInfo.memoryTypeIndex = memIndex;
+
+	if (vkAllocateMemory(m_logicalDevice, &allocInfo, nullptr, &convert.memory) != VK_SUCCESS)
+	{
+		vkDestroyImage(m_logicalDevice, convert.image, nullptr);
+		convert = {};
+		return false;
+	}
+
+	vkBindImageMemory(m_logicalDevice, convert.image, convert.memory, 0);
+	convert.width = width;
+	convert.height = height;
+	convert.srgb = srgb;
+	convert.everBlitted = false;
+	return true;
 }
 
 void VulkanRenderer::DualscreenDrain(size_t screenIndex)
@@ -342,46 +454,138 @@ void VulkanRenderer::HandleDualscreenFrame(LatteTextureView* texView, bool padVi
 	auto textureVk = baseImageTex->GetImageObj();
 	textureVk->flagForCurrentCommandBuffer();
 
+	// Whether this frame needs converting before DualscreenDrain can hand it
+	// to PublishScreen as-is, and if so whether that conversion happens here
+	// on the GPU or is left to DualscreenDrain's own CPU-side unpack -- see
+	// m_dualscreenConvert's own comment for why the GPU path exists at all.
+	// Two things can require it: a packed scan buffer (isPacked1010102), or
+	// this screen's current gamma setting no longer matching what this
+	// texture is tagged as -- DualscreenDrain already handles the latter on
+	// its own for whatever this leaves unconverted, so a device that cannot
+	// blit still gets a correct picture, just not the free one.
+	const bool sourceIsSRGB = (format == VK_FORMAT_R8G8B8A8_SRGB);
+	const bool dstUsesSRGB = padView ? LatteGPUState.drcBufferUsesSRGB : LatteGPUState.tvBufferUsesSRGB;
+	const bool needsConversion = isPacked1010102 || (sourceIsSRGB != dstUsesSRGB);
+	const bool useBlit = needsConversion && DualscreenBlitSupported() &&
+						 EnsureDualscreenConvertImage(screenIndex, width, height, dstUsesSRGB);
+
 	VkBufferImageCopy region{};
 	region.bufferOffset = 0;
 	// Tightly packed, which is what makes the stride the width on the far side.
 	region.bufferRowLength = width;
 	region.bufferImageHeight = height;
 	region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-	region.imageSubresource.baseArrayLayer = texViewVk->firstSlice;
+	// m_dualscreenConvert is always a fresh single-layer image (see its own
+	// comment), unlike the source texture this screen's slices can come from.
+	region.imageSubresource.baseArrayLayer = useBlit ? 0 : texViewVk->firstSlice;
 	region.imageSubresource.layerCount = 1;
 	region.imageSubresource.mipLevel = 0;
 	region.imageOffset = {0, 0, 0};
 	region.imageExtent = {(uint32)width, (uint32)height, 1};
 
-	// TRANSFER_SRC_OPTIMAL, not GENERAL: this texture's resting layout
-	// (GetDefaultLayout(), below) is already the least-constrained one Cemu
-	// has -- GENERAL itself, or VK_IMAGE_LAYOUT_ATTACHMENT_FEEDBACK_LOOP_OPTIMAL_EXT
-	// on hardware that supports it, chosen there because a Wii U render
-	// target moves between being written and being sampled with no layout
-	// transition Cemu wants to pay for on every such switch. Sending it
-	// through GENERAL for a plain read-only copy source is a step backwards
-	// from either: GENERAL disables the compression a real render target
-	// otherwise keeps, and the feedback-loop layout is already sample-safe
-	// without it. TextureReadbackVk.cpp's readback -- Cemu's own screenshot
-	// path, doing the same copy -- already uses TRANSFER_SRC_OPTIMAL for
-	// exactly this reason.
-	barrier_image<IMAGE_WRITE | TRANSFER_WRITE, TRANSFER_READ>(baseImageTex, region.imageSubresource,
-															   VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
-	vkCmdCopyImageToBuffer(m_state.currentCommandBuffer, textureVk->m_image,
-						   VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, slot.buffer, 1, &region);
-	barrier_image<TRANSFER_READ, TRANSFER_WRITE | IMAGE_WRITE>(baseImageTex,
-															   region.imageSubresource,
-															   baseImageTex->GetDefaultLayout());
+	if (useBlit)
+	{
+		auto& convert = m_dualscreenConvert[screenIndex];
+
+		VkImageSubresourceLayers srcRange{};
+		srcRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+		srcRange.mipLevel = 0;
+		srcRange.baseArrayLayer = texViewVk->firstSlice;
+		srcRange.layerCount = 1;
+		// Same reasoning as the non-blit path's own barrier below, just
+		// feeding the blit instead of the buffer copy.
+		barrier_image<IMAGE_WRITE | TRANSFER_WRITE, TRANSFER_READ>(baseImageTex, srcRange,
+																	VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+
+		VkImageSubresourceRange dstRange{};
+		dstRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+		dstRange.baseMipLevel = 0;
+		dstRange.levelCount = 1;
+		dstRange.baseArrayLayer = 0;
+		dstRange.layerCount = 1;
+		// UNDEFINED the very first time this image is used, TRANSFER_SRC_OPTIMAL
+		// every time after -- what the end of this same block always leaves it in.
+		barrier_image<TRANSFER_READ, TRANSFER_WRITE>(
+			convert.image, dstRange,
+			convert.everBlitted ? VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL : VK_IMAGE_LAYOUT_UNDEFINED,
+			VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+
+		VkOffset3D blitSize{width, height, 1};
+		VkImageBlit blitRegion{};
+		blitRegion.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+		blitRegion.srcSubresource.mipLevel = 0;
+		blitRegion.srcSubresource.baseArrayLayer = texViewVk->firstSlice;
+		blitRegion.srcSubresource.layerCount = 1;
+		blitRegion.srcOffsets[1] = blitSize;
+		blitRegion.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+		blitRegion.dstSubresource.mipLevel = 0;
+		blitRegion.dstSubresource.baseArrayLayer = 0;
+		blitRegion.dstSubresource.layerCount = 1;
+		blitRegion.dstOffsets[1] = blitSize;
+		// NEAREST: source and destination are always the same size here --
+		// this converts format only, never scale -- so there is nothing for
+		// a filter to do.
+		vkCmdBlitImage(m_state.currentCommandBuffer, textureVk->m_image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+					   convert.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blitRegion,
+					   VK_FILTER_NEAREST);
+		convert.everBlitted = true;
+
+		// Source back to its resting layout -- the blit above was its only use
+		// this frame, same as the non-blit path's copy below.
+		barrier_image<TRANSFER_READ, TRANSFER_WRITE | IMAGE_WRITE>(baseImageTex, srcRange,
+																	baseImageTex->GetDefaultLayout());
+		// Destination to TRANSFER_SRC_OPTIMAL for the readback copy just below
+		// -- and what it stays in afterward, ready for next frame's blit above
+		// without another UNDEFINED-rooted transition.
+		barrier_image<TRANSFER_WRITE, TRANSFER_READ>(convert.image, dstRange,
+													 VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+													 VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+
+		vkCmdCopyImageToBuffer(m_state.currentCommandBuffer, convert.image,
+							   VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, slot.buffer, 1, &region);
+	}
+	else
+	{
+		// TRANSFER_SRC_OPTIMAL, not GENERAL: this texture's resting layout
+		// (GetDefaultLayout(), below) is already the least-constrained one Cemu
+		// has -- GENERAL itself, or VK_IMAGE_LAYOUT_ATTACHMENT_FEEDBACK_LOOP_OPTIMAL_EXT
+		// on hardware that supports it, chosen there because a Wii U render
+		// target moves between being written and being sampled with no layout
+		// transition Cemu wants to pay for on every such switch. Sending it
+		// through GENERAL for a plain read-only copy source is a step backwards
+		// from either: GENERAL disables the compression a real render target
+		// otherwise keeps, and the feedback-loop layout is already sample-safe
+		// without it. TextureReadbackVk.cpp's readback -- Cemu's own screenshot
+		// path, doing the same copy -- already uses TRANSFER_SRC_OPTIMAL for
+		// exactly this reason.
+		barrier_image<IMAGE_WRITE | TRANSFER_WRITE, TRANSFER_READ>(baseImageTex, region.imageSubresource,
+																   VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+		vkCmdCopyImageToBuffer(m_state.currentCommandBuffer, textureVk->m_image,
+							   VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, slot.buffer, 1, &region);
+		barrier_image<TRANSFER_READ, TRANSFER_WRITE | IMAGE_WRITE>(baseImageTex,
+																   region.imageSubresource,
+																   baseImageTex->GetDefaultLayout());
+	}
 
 	slot.width = width;
 	slot.height = height;
-	slot.packed_a2b10g10r10 = isPacked1010102;
-	// No sRGB-tagged variant of A2B10G10R10_UNORM_PACK32 exists in Vulkan, so a
-	// sampler could never auto-decode one on read the way it would an
-	// _SRGB-tagged RGBA8 texture -- these bytes are exactly as raw as a plain
-	// R8G8B8A8_UNORM source, never pre-encoded.
-	slot.srgb = isPacked1010102 ? false : (format == VK_FORMAT_R8G8B8A8_SRGB);
+	if (useBlit)
+	{
+		// Already converted on the GPU above -- DualscreenDrain's fast,
+		// no-CPU-work path applies exactly as it would for a plain RGBA8
+		// frame that never needed converting at all.
+		slot.packed_a2b10g10r10 = false;
+		slot.srgb = dstUsesSRGB;
+	}
+	else
+	{
+		slot.packed_a2b10g10r10 = isPacked1010102;
+		// No sRGB-tagged variant of A2B10G10R10_UNORM_PACK32 exists in Vulkan, so a
+		// sampler could never auto-decode one on read the way it would an
+		// _SRGB-tagged RGBA8 texture -- these bytes are exactly as raw as a plain
+		// R8G8B8A8_UNORM source, never pre-encoded.
+		slot.srgb = isPacked1010102 ? false : sourceIsSRGB;
+	}
 	// Both screens of one emulated frame share this, which is what stops the
 	// two devices showing halves of different moments.
 	slot.serial = LatteGPUState.frameCounter;

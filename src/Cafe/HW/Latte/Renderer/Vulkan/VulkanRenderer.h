@@ -700,6 +700,52 @@ private:
 	std::vector<uint32> m_dualscreenPixels;
 	bool m_dualscreenFormatWarned = false;
 	bool m_dualscreenHasBuffers = false;
+
+	// A persistent GPU-local image, one per screen, that a source texture in
+	// a format DualscreenDrain cannot unpack cheaply on the CPU (a packed
+	// A2B10G10R10 scan buffer -- see DualscreenReadback::packed_a2b10g10r10)
+	// is blitted into before the readback copy: HandleDualscreenFrame does
+	// the format conversion on the GPU, essentially free next to everything
+	// else it already draws that frame, so the CPU-side readback lands
+	// already in RGBA8 and needs no per-pixel unpack loop at all -- which
+	// measured out to a full CPU core kept continuously busy on a discrete
+	// GPU, reading GPU-visible memory one pixel at a time (see
+	// HandleDualscreenFrame's own comment on why that read is so much
+	// slower than the arithmetic it is doing). Reused and resized on demand
+	// like DualscreenReadback's own buffers above, not recreated every
+	// frame.
+	struct DualscreenConvert
+	{
+		VkImage image = VK_NULL_HANDLE;
+		VkDeviceMemory memory = VK_NULL_HANDLE;
+		int width = 0;
+		int height = 0;
+		// Matched against the screen's current colour space each frame the
+		// same way width/height are matched against its current size: a
+		// change in either is a reason to recreate this, not just a resize.
+		bool srgb = false;
+		// Whether a blit has ever written to this image since it was
+		// (re)created -- its layout coming into the next blit is
+		// TRANSFER_SRC_OPTIMAL once one has (that is what the last blit left
+		// it in), UNDEFINED before the very first one.
+		bool everBlitted = false;
+	};
+	std::array<DualscreenConvert, 2> m_dualscreenConvert{};
+	// Cached once rather than reprobed every frame: whether this device can
+	// blit A2B10G10R10_UNORM_PACK32 into R8G8B8A8_UNORM/_SRGB at all. Absent
+	// means not yet checked; false falls back to the CPU unpack path in
+	// DualscreenDrain exactly as before this existed.
+	std::optional<bool> m_dualscreenBlitSupported;
+	// Populates m_dualscreenBlitSupported the first time it is needed and
+	// returns it.
+	bool DualscreenBlitSupported();
+	// Ensures m_dualscreenConvert[screenIndex] is a width x height image in
+	// the right colour space, (re)creating it if it is not -- the same
+	// resize-on-demand shape DualscreenReadback's own buffers use. False
+	// means the (re)creation itself failed (out of device memory, most
+	// likely), in which case the caller falls back to the CPU path for this
+	// frame rather than capturing nothing.
+	bool EnsureDualscreenConvertImage(size_t screenIndex, int width, int height, bool srgb);
 	void DualscreenDrain(size_t screenIndex);
 	void DualscreenReleaseBuffers();
 	// The CPU-side half of a Dualscreen readback -- unpacking whatever format
