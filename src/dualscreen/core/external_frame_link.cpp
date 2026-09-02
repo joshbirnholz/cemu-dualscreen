@@ -851,12 +851,18 @@ void ExternalFrameProducer::send_rumble(bool active) {
     body.push_back(active ? 1u : 0u);
     std::vector<uint8_t> message;
     frame_message(ExternalControl::Rumble, body, message);
-    // A drop here just means the edge is retried whenever this is next
-    // called with the same value -- same as a dropped Frame or Audio
-    // message, and unlike send_input() there is no reason to remember
-    // whether it actually reached the wire: this is called on every change
-    // regardless, not diffed against what was last delivered.
-    write_best_effort(fd_, message.data(), message.size());
+    // Recorded as sent only if it actually reached the wire. The check at the
+    // top of this function is what makes that matter: this is diffed against
+    // what was last delivered, so recording a value that was dropped means
+    // every later call with that same value returns early and the edge never
+    // arrives at all -- the motor stays stuck on whatever it was, for the rest
+    // of the session. Leaving the recorded state alone instead means the next
+    // call with the same value simply tries again.
+    bool sent = false;
+    write_best_effort(fd_, message.data(), message.size(), &sent);
+    if (!sent) {
+        return;
+    }
     sent_rumble_ = active;
     have_sent_rumble_ = true;
 }

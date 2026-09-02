@@ -4,7 +4,6 @@
 #include <memory>
 #include <mutex>
 #include <optional>
-#include <shared_mutex>
 #include <string>
 
 #include "core/external_frame_link.hpp"
@@ -27,22 +26,23 @@
 // once a frame), and SendAudio() from Cemu's own audio thread every few
 // milliseconds.
 //
-// A shared_mutex rather than a plain one: PublishScreen(), SendAudio(),
-// SendRumble() and ReadInput() touch entirely disjoint pieces of m_producer's
-// state (screen slots, the audio/rumble/input control-socket traffic) and
-// have no need to exclude each other at all -- the only real hazard is one of
-// them running while Poll() tears the connection down (m_producer.close(),
-// invalidating fd_/memory_ out from under an in-flight write) or Start() sets
-// it up. So those four take a shared (reader) lock and can run fully
-// concurrently with each other; Poll() and Start()/Stop() take the exclusive
-// (writer) lock. This used to be a plain mutex, which meant PublishScreen()
-// and SendAudio() excluded each other despite never touching the same data --
-// harmless when PublishScreen() was fast, but a large or format-converted
-// frame (a 4K graphics pack; Wind Waker HD's packed 10-bit scan buffer) could
-// hold the old lock for 20ms+, and every SendAudio() call landing in that
-// window failed its try_to_lock and dropped that block of audio outright --
-// heard as a pop, and worse the larger or more expensive the frame got. See
-// SendAudio()'s own comment for why it still never blocks.
+// A plain mutex, deliberately, and not a shared_mutex. It is tempting to say
+// that PublishScreen(), SendAudio(), SendRumble() and ReadInput() touch
+// disjoint state -- screen slots against audio against rumble -- and so could
+// each hold a shared (reader) lock and run concurrently, excluding only Poll()
+// tearing the connection down. That was tried, and it is wrong: all of them
+// end up writing to the same control socket, and those writes are not atomic.
+// write_best_effort() can commit part of a message and then wait for the
+// socket to drain, so a second thread writing in that window puts its bytes in
+// the middle of the first message and desynchronises the length-prefixed
+// framing from then on. It surfaced as the GamePad's rumble silently never
+// reaching the shell again.
+//
+// So everything stays behind this one lock. The cost is that a slow
+// PublishScreen() can make a concurrent SendAudio() or SendRumble() miss its
+// try_to_lock and drop that one block -- see SendAudio()'s own comment for why
+// dropping is still the right answer there rather than blocking a real-time
+// thread.
 class DualscreenSession
 {
 public:
@@ -88,12 +88,10 @@ public:
 	// audio target to. Never blocks: called from Cemu's own real-time audio
 	// thread, where waiting on m_mutex would be heard as a stutter in
 	// whichever screen's sound this machine is still playing locally, or a
-	// gap in the buffer this same call is what feeds the shell. Takes m_mutex
-	// as a shared (reader) lock -- see the class comment -- so in ordinary
-	// operation it runs concurrently with PublishScreen() rather than behind
-	// it; only Poll() tearing the connection down at the same instant can
-	// still make the try_to_lock fail, which is rare enough that dropping
-	// this one block is the right trade against waiting for it.
+	// gap in the buffer this same call is what feeds the shell. So it takes
+	// m_mutex with try_to_lock and gives up rather than waiting: a block
+	// dropped here is one block of sound, where a block delayed here is a
+	// stall on a thread that must never stall.
 	void SendAudio(ds::ScreenId screen, const int16_t* interleavedStereo, size_t frames);
 
 	// Tells the shell whether the GamePad's own motor is on right now, so it
@@ -120,10 +118,9 @@ public:
 	int PadHeight();
 
 private:
-	// See the class comment: PublishScreen()/SendAudio()/SendRumble()/
-	// ReadInput() take this shared; Poll() and Start()/Stop() take it
-	// exclusive.
-	std::shared_mutex m_mutex;
+	// Every method that reaches m_producer takes this, exclusively -- see the
+	// class comment for why a shared_mutex is not safe here.
+	std::mutex m_mutex;
 	ds::ExternalFrameProducer m_producer;
 	bool m_running = false;
 	int m_padWidth = 0;

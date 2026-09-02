@@ -224,9 +224,10 @@ void DualscreenSession::PublishScreen(ds::ScreenId screen, uint64_t serial, cons
 	ScopedCallTiming timing("PublishScreen", s_windowStart, s_totalMs, s_calls);
 
 	// Shared, not exclusive -- see the class comment. This can run alongside
-	// SendAudio()/SendRumble()/ReadInput() with no conflict; it only excludes
-	// Poll() tearing the connection down mid-write.
-	std::shared_lock lock(m_mutex);
+	// Exclusive, like everything else that reaches m_producer: publish() ends
+	// with a write to the same control socket SendAudio()/SendRumble() use,
+	// and those writes cannot safely interleave -- see the class comment.
+	std::scoped_lock lock(m_mutex);
 	if (!m_running || pixels == nullptr || width <= 0 || height <= 0)
 		return;
 
@@ -268,7 +269,7 @@ void DualscreenSession::SendAudio(ds::ScreenId screen, const int16_t* interleave
 	// same kind of drop Frame and Audio messages already tolerate on the
 	// wire for a link that fell behind -- unnoticeable next to what waiting
 	// for the lock would cost.
-	std::shared_lock lock(m_mutex, std::try_to_lock);
+	std::unique_lock lock(m_mutex, std::try_to_lock);
 	if (!lock.owns_lock() || !m_running)
 		return;
 
@@ -285,12 +286,13 @@ void DualscreenSession::SendAudio(ds::ScreenId screen, const int16_t* interleave
 
 void DualscreenSession::SendRumble(bool active)
 {
-	// Shared and try_to_lock, same reasoning as SendAudio(): VPADController::
-	// update() calls this from wherever VPADRead's own polling runs, up to
-	// sixty times a second, and a false here on the rare contended call just
-	// means this particular tick's edge is caught on the next one -- cheap
-	// next to blocking whichever thread is asking.
-	std::shared_lock lock(m_mutex, std::try_to_lock);
+	// try_to_lock, same reasoning as SendAudio(): VPADController::update()
+	// calls this from wherever VPADRead's own polling runs, up to sixty times
+	// a second, and giving up on the rare contended call is cheaper than
+	// blocking whichever thread is asking. Nothing is lost by it: an edge that
+	// does not reach the wire is not recorded as sent, so the next call with
+	// the same value sends it -- see ExternalFrameProducer::send_rumble().
+	std::unique_lock lock(m_mutex, std::try_to_lock);
 	if (!lock.owns_lock() || !m_running)
 		return;
 
@@ -299,10 +301,7 @@ void DualscreenSession::SendRumble(bool active)
 
 bool DualscreenSession::ReadInput(ds::ExternalInput& out)
 {
-	// Shared, not exclusive -- see the class comment. input_/have_input_ are
-	// only ever written by Poll(), so this only needs to exclude that, not
-	// PublishScreen()/SendAudio()/SendRumble(), which never touch them.
-	std::shared_lock lock(m_mutex);
+	std::scoped_lock lock(m_mutex);
 	if (!m_running || !m_producer.have_input())
 		return false;
 	// By value rather than by reference: the next Poll() on another thread
