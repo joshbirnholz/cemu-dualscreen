@@ -156,10 +156,13 @@ struct ExternalSharedHeader {
     // Three per screen: one being written, one being read, one spare. Two would
     // do until a reader was slow, which is exactly when it matters.
     static constexpr int kSlotsPerScreen = 3;
-    // The most a Wii U screen can be asked to be. Cemu renders above native, and
-    // the memory is made once rather than remade whenever it changes its mind.
-    static constexpr int kMaxWidth = 1920;
-    static constexpr int kMaxHeight = 1080;
+    // The most a Wii U screen can be asked to be. Cemu renders above native --
+    // a graphics pack's own resolution presets go up to 4K (observed directly:
+    // Bayonetta 2's "Extreme" preset renders at 3840x2160, and silently never
+    // reached this link at the old 1920x1080 ceiling) -- and the memory is
+    // made once rather than remade whenever a running game changes its mind.
+    static constexpr int kMaxWidth = 3840;
+    static constexpr int kMaxHeight = 2160;
 
     std::atomic<uint32_t> magic{0};
     std::atomic<uint32_t> version{0};
