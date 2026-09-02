@@ -4,6 +4,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <shared_mutex>
 #include <string>
 
 #include "core/external_frame_link.hpp"
@@ -19,15 +20,29 @@
 // CemuInput -- putting it the other way round would be a cycle.
 //
 // Everything is behind one lock, because m_producer is one object with no
-// locking of its own and four different threads reach it: Poll() and
-// PublishScreen() from the GPU thread and the background readback thread
-// (m_dualscreenThread in VulkanRendererDualscreen.cpp) roughly once a frame
-// each, ReadInput() from wherever VPADRead ends up (game-controlled, and
-// sometimes far faster than once a frame), and SendAudio() from Cemu's own
-// audio thread every few milliseconds. That last one is the one of these
-// that actually matters: a real-time audio callback stalling on a lock held
-// by any of the others is a stutter or a cutout, not just a late frame -- see
-// SendAudio()'s own comment for how it avoids that without a second lock.
+// locking of its own and four different threads reach it: Poll() from the GPU
+// thread, PublishScreen() from the background readback thread
+// (m_dualscreenThread in VulkanRendererDualscreen.cpp), ReadInput() from
+// wherever VPADRead ends up (game-controlled, and sometimes far faster than
+// once a frame), and SendAudio() from Cemu's own audio thread every few
+// milliseconds.
+//
+// A shared_mutex rather than a plain one: PublishScreen(), SendAudio(),
+// SendRumble() and ReadInput() touch entirely disjoint pieces of m_producer's
+// state (screen slots, the audio/rumble/input control-socket traffic) and
+// have no need to exclude each other at all -- the only real hazard is one of
+// them running while Poll() tears the connection down (m_producer.close(),
+// invalidating fd_/memory_ out from under an in-flight write) or Start() sets
+// it up. So those four take a shared (reader) lock and can run fully
+// concurrently with each other; Poll() and Start()/Stop() take the exclusive
+// (writer) lock. This used to be a plain mutex, which meant PublishScreen()
+// and SendAudio() excluded each other despite never touching the same data --
+// harmless when PublishScreen() was fast, but a large or format-converted
+// frame (a 4K graphics pack; Wind Waker HD's packed 10-bit scan buffer) could
+// hold the old lock for 20ms+, and every SendAudio() call landing in that
+// window failed its try_to_lock and dropped that block of audio outright --
+// heard as a pop, and worse the larger or more expensive the frame got. See
+// SendAudio()'s own comment for why it still never blocks.
 class DualscreenSession
 {
 public:
@@ -73,12 +88,12 @@ public:
 	// audio target to. Never blocks: called from Cemu's own real-time audio
 	// thread, where waiting on m_mutex would be heard as a stutter in
 	// whichever screen's sound this machine is still playing locally, or a
-	// gap in the buffer this same call is what feeds the shell. If the lock
-	// is held by Poll() or PublishScreen() right now, this block is skipped
-	// rather than waited for -- the same "drop it, the next one right behind
-	// makes it unnoticeable" call this link already makes for Frame and
-	// Audio messages on the wire, just made one level up, before there is
-	// even a message to drop.
+	// gap in the buffer this same call is what feeds the shell. Takes m_mutex
+	// as a shared (reader) lock -- see the class comment -- so in ordinary
+	// operation it runs concurrently with PublishScreen() rather than behind
+	// it; only Poll() tearing the connection down at the same instant can
+	// still make the try_to_lock fail, which is rare enough that dropping
+	// this one block is the right trade against waiting for it.
 	void SendAudio(ds::ScreenId screen, const int16_t* interleavedStereo, size_t frames);
 
 	// Tells the shell whether the GamePad's own motor is on right now, so it
@@ -105,7 +120,10 @@ public:
 	int PadHeight();
 
 private:
-	std::mutex m_mutex;
+	// See the class comment: PublishScreen()/SendAudio()/SendRumble()/
+	// ReadInput() take this shared; Poll() and Start()/Stop() take it
+	// exclusive.
+	std::shared_mutex m_mutex;
 	ds::ExternalFrameProducer m_producer;
 	bool m_running = false;
 	int m_padWidth = 0;
