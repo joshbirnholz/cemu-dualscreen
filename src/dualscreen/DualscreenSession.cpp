@@ -107,6 +107,13 @@ void DualscreenSession::Start(int tvWidth, int tvHeight, int padWidth, int padHe
 	m_requestedScreen.reset();
 	m_runningAtomic.store(true, std::memory_order_relaxed);
 	m_requestedScreenAtomic.store(-1, std::memory_order_relaxed);
+	// Nothing a previous session was still holding belongs to this one. Taken
+	// in the same order as everywhere else -- m_mutex is already held here.
+	{
+		std::scoped_lock pending(m_pendingAudioMutex);
+		m_pendingAudio[0].clear();
+		m_pendingAudio[1].clear();
+	}
 	cemuLog_log(LogType::Force, "Dualscreen: handing screens over at {}", s_socketPath);
 }
 
@@ -120,6 +127,13 @@ void DualscreenSession::Stop()
 	m_requestedScreen.reset();
 	m_runningAtomic.store(false, std::memory_order_relaxed);
 	m_requestedScreenAtomic.store(-1, std::memory_order_relaxed);
+	// Nothing a previous session was still holding belongs to this one. Taken
+	// in the same order as everywhere else -- m_mutex is already held here.
+	{
+		std::scoped_lock pending(m_pendingAudioMutex);
+		m_pendingAudio[0].clear();
+		m_pendingAudio[1].clear();
+	}
 	cemuLog_log(LogType::Force, "Dualscreen: session ended");
 }
 
@@ -258,23 +272,52 @@ void DualscreenSession::SendAudio(ds::ScreenId screen, const int16_t* interleave
 	if (interleavedStereo == nullptr || frames == 0)
 		return;
 
-	// Shared, not exclusive, and still try_to_lock rather than a blocking
-	// wait: this runs on Cemu's own real-time audio thread. A shared lock is
-	// what lets this run concurrently with PublishScreen() instead of behind
-	// it (see the class comment) -- but Poll() still occasionally needs the
-	// exclusive lock to tear the connection down, and waiting on that would
-	// be heard as a cutout in whichever screen's audio this machine is still
-	// playing locally, or a gap in the stream this call is what feeds the
-	// shell. One skipped block is about 12ms of this screen's sound, the
-	// same kind of drop Frame and Audio messages already tolerate on the
-	// wire for a link that fell behind -- unnoticeable next to what waiting
-	// for the lock would cost.
+	// try_to_lock rather than a blocking wait, always: this runs on Cemu's
+	// own real-time audio thread, and waiting on
+	// m_mutex would be heard as a cutout in whichever screen's audio this
+	// machine is still playing locally, or a gap in the stream this call is
+	// what feeds the shell.
+	//
+	// So the samples go into m_pendingAudio first, under nothing but their own
+	// small mutex, and only then is the link's lock tried. Missing it costs
+	// this block a few milliseconds of extra delay and nothing else; the next
+	// block that does get the lock carries both. That matters because the
+	// alternative -- returning here and dropping the block -- takes about 12ms
+	// of sound out of the middle of a waveform, and PublishScreen() holds
+	// m_mutex often enough to make that happen roughly once a second, which is
+	// audible as exactly the popping this whole path has been chased for.
+	const size_t index = (screen == ds::ScreenId::Top) ? 0 : 1;
+	{
+		std::scoped_lock pending(m_pendingAudioMutex);
+		std::vector<int16_t>& held = m_pendingAudio[index];
+		held.insert(held.end(), interleavedStereo, interleavedStereo + frames * 2);
+		// A link that has genuinely stopped taking audio must not make this
+		// grow without bound. Well past anything ordinary contention causes:
+		// by a quarter second the sound is too old to be worth playing anyway.
+		constexpr size_t kMaxPendingSamples = 48000 * 2 / 4;
+		if (held.size() > kMaxPendingSamples)
+			held.erase(held.begin(), held.end() - static_cast<std::ptrdiff_t>(kMaxPendingSamples));
+	}
+
+	// m_mutex first and m_pendingAudioMutex second, always, and never the
+	// other way round: send_audio() below writes to the control socket, which
+	// can wait for the socket to drain, and holding the pending mutex across
+	// that would make the very stall this exists to avoid -- with the audio
+	// thread waiting on it next time round.
 	std::unique_lock lock(m_mutex, std::try_to_lock);
 	if (!lock.owns_lock() || !m_running)
+		return;  // kept, not lost: the next block that gets the lock takes it too
+
+	std::vector<int16_t> outgoing;
+	{
+		std::scoped_lock pending(m_pendingAudioMutex);
+		outgoing.swap(m_pendingAudio[index]);
+	}
+	if (outgoing.empty())
 		return;
 
 	std::string error;
-	if (!m_producer.send_audio(screen, interleavedStereo, frames, &error))
+	if (!m_producer.send_audio(screen, outgoing.data(), outgoing.size() / 2, &error))
 	{
 		if (!m_reportedAudioFailure)
 		{

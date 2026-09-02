@@ -5,6 +5,7 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <vector>
 
 #include "core/external_frame_link.hpp"
 #include "layout/screen_id.hpp"
@@ -38,11 +39,12 @@
 // framing from then on. It surfaced as the GamePad's rumble silently never
 // reaching the shell again.
 //
-// So everything stays behind this one lock. The cost is that a slow
-// PublishScreen() can make a concurrent SendAudio() or SendRumble() miss its
-// try_to_lock and drop that one block -- see SendAudio()'s own comment for why
-// dropping is still the right answer there rather than blocking a real-time
-// thread.
+// So everything stays behind this one lock, and the calls that must not wait
+// for it -- SendAudio() and SendRumble(), both on threads that cannot stall --
+// take it with try_to_lock. Missing it is then handled by keeping what they
+// were carrying rather than discarding it: see m_pendingAudio for sound, and
+// ExternalFrameProducer::send_rumble() for the motor's own state. Neither
+// waits, and neither loses anything by not waiting.
 class DualscreenSession
 {
 public:
@@ -89,9 +91,9 @@ public:
 	// thread, where waiting on m_mutex would be heard as a stutter in
 	// whichever screen's sound this machine is still playing locally, or a
 	// gap in the buffer this same call is what feeds the shell. So it takes
-	// m_mutex with try_to_lock and gives up rather than waiting: a block
-	// dropped here is one block of sound, where a block delayed here is a
-	// stall on a thread that must never stall.
+	// m_mutex with try_to_lock and never waits -- but a block that misses the
+	// lock is kept and sent with the next one rather than thrown away, since
+	// throwing it away is itself a pop. See m_pendingAudio.
 	void SendAudio(ds::ScreenId screen, const int16_t* interleavedStereo, size_t frames);
 
 	// Tells the shell whether the GamePad's own motor is on right now, so it
@@ -137,6 +139,26 @@ private:
 	// which is not itself lock-free on every platform this builds for.
 	std::atomic<bool> m_runningAtomic{false};
 	std::atomic<int> m_requestedScreenAtomic{-1};
+	// Sound that arrived while m_mutex was busy, per screen, waiting to go out
+	// with the next block that gets through.
+	//
+	// SendAudio() cannot wait for the lock -- it runs on the real-time audio
+	// thread -- but the block it is holding must not simply be dropped for
+	// that either: dropping it takes about 12ms of sound out of the middle of
+	// a waveform, and a step discontinuity like that is exactly what a pop is.
+	// PublishScreen() holds m_mutex for around a millisecond per frame, which
+	// against 87 audio blocks a second is a collision roughly once a second --
+	// once a second is not "rare", it is audible. Kept here instead and sent
+	// with the next block, which costs that sound a few milliseconds of extra
+	// delay and loses none of it.
+	//
+	// Guarded by its own small mutex rather than by m_mutex, which would
+	// defeat the point: it is only ever held for a copy between two buffers,
+	// never across a socket write, so nothing that takes it can be made to
+	// wait on the link.
+	std::mutex m_pendingAudioMutex;
+	std::vector<int16_t> m_pendingAudio[2];
+
 	// Said once rather than every frame: a session that cannot connect is a
 	// normal way to run, and a session that keeps failing is one line of
 	// explanation, not a log.
