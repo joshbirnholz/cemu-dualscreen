@@ -107,6 +107,43 @@ enum class ExternalButton : uint8_t {
     LeftStick, RightStick,
 };
 
+// How a GamePad is being held and moved, as read off whatever device is
+// actually standing in for it.
+//
+// Raw, and in SDL's units and axes: gyro in radians per second, acceleration
+// in metres per second squared, right-handed with +x right, +y up and +z
+// towards the player. Nothing is integrated here on purpose -- a producer
+// consuming this has its own sensor fusion, tuned to what a real GamePad
+// reports, and this link handing it a second opinion about which way is up
+// would be worse than handing it nothing.
+struct ExternalMotion {
+    // False when the device standing in for the GamePad has no sensors, or
+    // has not been asked to read them. Everything below means nothing then,
+    // and a producer should fall back to whatever motion it has of its own.
+    bool present = false;
+    float gyro_x = 0.0f;
+    float gyro_y = 0.0f;
+    float gyro_z = 0.0f;
+    float accel_x = 0.0f;
+    float accel_y = 0.0f;
+    float accel_z = 0.0f;
+    // When it was sampled, by the reading device's own clock, in
+    // microseconds. What a producer integrating these should measure the
+    // interval between samples with, rather than its own arrival times: the
+    // reading crossed a network to get here, and a sample delayed by a busy
+    // moment on the wire is not a sample that took longer to happen.
+    // Unsigned subtraction gives the right interval across the wrap this has
+    // every seventy-one minutes.
+    uint32_t sampled_us = 0;
+
+    bool operator==(const ExternalMotion& other) const {
+        return present == other.present && gyro_x == other.gyro_x && gyro_y == other.gyro_y &&
+               gyro_z == other.gyro_z && accel_x == other.accel_x && accel_y == other.accel_y &&
+               accel_z == other.accel_z && sampled_us == other.sampled_us;
+    }
+    bool operator!=(const ExternalMotion& other) const { return !(*this == other); }
+};
+
 // One moment's worth of it. Sent every frame rather than as changes, because a
 // pad's state is small and a missed edge is a button that sticks down.
 struct ExternalInput {
@@ -121,6 +158,9 @@ struct ExternalInput {
     bool touching = false;
     uint16_t touch_x = 0;
     uint16_t touch_y = 0;
+    // How the thing is being held -- see ExternalMotion. Absent when whatever
+    // is standing in for the GamePad has no sensors to read.
+    ExternalMotion motion;
 
     bool pressed(ExternalButton button) const {
         return (buttons & (1u << static_cast<unsigned>(button))) != 0u;
@@ -133,7 +173,7 @@ struct ExternalInput {
         return buttons == other.buttons && left_x == other.left_x && left_y == other.left_y &&
                right_x == other.right_x && right_y == other.right_y &&
                touching == other.touching && touch_x == other.touch_x &&
-               touch_y == other.touch_y;
+               touch_y == other.touch_y && motion == other.motion;
     }
     bool operator!=(const ExternalInput& other) const { return !(*this == other); }
 };

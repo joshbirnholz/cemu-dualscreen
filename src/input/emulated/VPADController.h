@@ -2,6 +2,7 @@
 
 #include "input/emulated/EmulatedController.h"
 #include "Cafe/OS/libs/vpad/vpad.h"
+#include "input/motion/MotionHandler.h"
 
 
 class VPADController : public EmulatedController
@@ -106,5 +107,24 @@ private:
 
 	void update_touch(VPADStatus_t& status);
 	void update_motion(VPADStatus_t& status);
+	// Fills the motion half of a VPADStatus from one already-fused sample.
+	// Shared by update_motion() below and by the Dualscreen path in
+	// VPADRead(), so that a GamePad held through the shell and one held
+	// through a controller plugged in here report motion through exactly the
+	// same arithmetic rather than through two copies of it.
+	static void apply_motion_sample(VPADStatus_t& status, MotionSample& sample);
+	// The shell's own motion, integrated here. The shell sends raw gyroscope
+	// and accelerometer readings and nothing else -- see ExternalMotion --
+	// because turning those into an orientation is what this handler already
+	// does, tuned to what a real GamePad reports. A second integration on the
+	// shell's side would only be a different answer to the same question.
+	WiiUMotionHandler m_dualscreen_motion;
+	// The timestamp of the last sample fed into it, by the sending device's
+	// own clock, and whether there has been one. The interval between two of
+	// those is what the integration steps by -- not the interval between
+	// their arrivals here, which is the network's jitter rather than the
+	// player's movement.
+	uint32 m_last_dualscreen_motion_us = 0;
+	bool m_have_dualscreen_motion = false;
 	glm::ivec2 m_last_touch_position{};
 };

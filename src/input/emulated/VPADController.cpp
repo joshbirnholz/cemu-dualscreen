@@ -257,14 +257,67 @@ void VPADController::VPADRead(VPADStatus_t& status, const BtnRepeat& repeat)
 	status.dir.y = {0, 1, 0};
 	status.dir.z = {0, 0, 1};
 	status.accXY = {1.0f, 0.0f};
-	// Not suppressed for a Dualscreen pad the way buttons, sticks and touch
-	// are above: ExternalInput carries none of this, so there is nothing here
-	// to duplicate. update_motion() reads whatever Cemu's own controllers are
+	// The shell's, when the device standing in for the GamePad is reporting
+	// how it is being held. That device is the one in the player's hands and
+	// the one they are aiming at a screen, so it wins outright over anything
+	// plugged in here -- the same way its buttons, sticks and touches do
+	// above.
+	//
+	// Without one, update_motion() reads whatever Cemu's own controllers are
 	// configured for -- a DSU client pointed at a local or a network gyro
-	// server among them -- same as it always has, with or without a shell
-	// attached. Skipping it was simply losing gyro on every Wii U session run
-	// through the link.
-	update_motion(status);
+	// server among them -- exactly as it always has. That path stays
+	// unsuppressed even during a shell session: a shell whose device has no
+	// sensors is not a reason to lose the gyro somebody has wired up here.
+	if (hasDualscreenPad && dualscreenPad.motion.present)
+	{
+		// The interval between the two samples' own timestamps, by the
+		// sending device's clock. Not between their arrivals here: they came
+		// over a network, and a sample held up by a busy moment on the wire
+		// is not a movement that took longer to happen.
+		//
+		// Unsigned subtraction, which is what makes the wrap that timestamp
+		// has every seventy-one minutes come out right rather than as one
+		// enormous step.
+		float seconds = 0.0f;
+		if (m_have_dualscreen_motion)
+		{
+			const uint32 elapsed = dualscreenPad.motion.sampled_us - m_last_dualscreen_motion_us;
+			seconds = (float)elapsed / 1000000.0f;
+		}
+		m_last_dualscreen_motion_us = dualscreenPad.motion.sampled_us;
+		m_have_dualscreen_motion = true;
+		// Clamped for the first sample of a session (nothing to measure
+		// against) and for a gap long enough to mean the link stopped rather
+		// than the player moved slowly -- an unbounded step there would spin
+		// the fused orientation somewhere arbitrary in one frame.
+		if (seconds <= 0.0f || seconds > 1.0f)
+			seconds = 1.0f / 60.0f;
+
+		// Into the axes and units this handler is fed everywhere else. The
+		// shell sends SDL's convention unchanged (see ExternalMotion), so
+		// this is exactly the transform SDLControllerProvider applies to a
+		// controller plugged in here -- which is what makes a Steam Deck held
+		// across the link behave like the same Deck plugged into this
+		// machine, rather than like a second, subtly different device.
+		constexpr float kGravity = 9.81f;
+		const float gx = dualscreenPad.motion.gyro_x;
+		const float gy = -dualscreenPad.motion.gyro_y;
+		const float gz = -dualscreenPad.motion.gyro_z;
+		const float ax = -dualscreenPad.motion.accel_x / kGravity;
+		const float ay = dualscreenPad.motion.accel_y / kGravity;
+		const float az = dualscreenPad.motion.accel_z / kGravity;
+		m_dualscreen_motion.processMotionSample(seconds, gx, gy, gz, ax, ay, az);
+		MotionSample sample = m_dualscreen_motion.getMotionSample();
+		apply_motion_sample(status, sample);
+	}
+	else
+	{
+		// Whatever it last said stops being true once it stops saying it, so
+		// the next sample after a gap starts a fresh interval rather than
+		// integrating across the whole silence.
+		m_have_dualscreen_motion = false;
+		update_motion(status);
+	}
 }
 
 void VPADController::update()
@@ -367,48 +420,47 @@ void VPADController::update_touch(VPADStatus_t& status)
 	status.tpProcessed2 = status.tpData;
 }
 
+void VPADController::apply_motion_sample(VPADStatus_t& status, MotionSample& motionSample)
+{
+	glm::vec3 acc;
+	motionSample.getVPADAccelerometer(&acc[0]);
+	status.acc.x = acc.x;
+	status.acc.y = acc.y;
+	status.acc.z = acc.z;
+	status.accMagnitude = motionSample.getVPADAccMagnitude();
+	status.accAcceleration = motionSample.getVPADAccAcceleration();
+
+	glm::vec3 gyroChange;
+	motionSample.getVPADGyroChange(&gyroChange[0]);
+	status.gyroChange.x = gyroChange.x;
+	status.gyroChange.y = gyroChange.y;
+	status.gyroChange.z = gyroChange.z;
+
+	glm::vec3 gyroOrientation;
+	motionSample.getVPADOrientation(&gyroOrientation[0]);
+	status.gyroOrientation.x = gyroOrientation.x;
+	status.gyroOrientation.y = gyroOrientation.y;
+	status.gyroOrientation.z = gyroOrientation.z;
+
+	float attitude[9];
+	motionSample.getVPADAttitudeMatrix(attitude);
+	status.dir.x.x = attitude[0];
+	status.dir.x.y = attitude[1];
+	status.dir.x.z = attitude[2];
+	status.dir.y.x = attitude[3];
+	status.dir.y.y = attitude[4];
+	status.dir.y.z = attitude[5];
+	status.dir.z.x = attitude[6];
+	status.dir.z.y = attitude[7];
+	status.dir.z.z = attitude[8];
+}
+
 void VPADController::update_motion(VPADStatus_t& status)
 {
 	if (has_motion())
 	{
 		auto motionSample = get_motion_data();
-
-		glm::vec3 acc;
-		motionSample.getVPADAccelerometer(&acc[0]);
-		//const auto& acc = motionSample.getVPADAccelerometer();
-		status.acc.x = acc.x;
-		status.acc.y = acc.y;
-		status.acc.z = acc.z;
-		status.accMagnitude = motionSample.getVPADAccMagnitude();
-		status.accAcceleration = motionSample.getVPADAccAcceleration();
-
-		glm::vec3 gyroChange;
-		motionSample.getVPADGyroChange(&gyroChange[0]);
-		//const auto& gyroChange = motionSample.getVPADGyroChange();
-		status.gyroChange.x = gyroChange.x;
-		status.gyroChange.y = gyroChange.y;
-		status.gyroChange.z = gyroChange.z;
-
-		//debug_printf("GyroChange %7.2lf %7.2lf %7.2lf\n", (float)status.gyroChange.x, (float)status.gyroChange.y, (float)status.gyroChange.z);
-
-		glm::vec3 gyroOrientation;
-		motionSample.getVPADOrientation(&gyroOrientation[0]);
-		//const auto& gyroOrientation = motionSample.getVPADOrientation();
-		status.gyroOrientation.x = gyroOrientation.x;
-		status.gyroOrientation.y = gyroOrientation.y;
-		status.gyroOrientation.z = gyroOrientation.z;
-
-		float attitude[9];
-		motionSample.getVPADAttitudeMatrix(attitude);
-		status.dir.x.x = attitude[0];
-		status.dir.x.y = attitude[1];
-		status.dir.x.z = attitude[2];
-		status.dir.y.x = attitude[3];
-		status.dir.y.y = attitude[4];
-		status.dir.y.z = attitude[5];
-		status.dir.z.x = attitude[6];
-		status.dir.z.y = attitude[7];
-		status.dir.z.z = attitude[8];
+		apply_motion_sample(status, motionSample);
 		return;
 	}
 

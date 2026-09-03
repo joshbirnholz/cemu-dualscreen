@@ -42,9 +42,30 @@ uint16_t read_u16(const uint8_t* data) {
                                  (static_cast<uint16_t>(data[1]) << 8));
 }
 
-// The pad, as 17 bytes. Written out here rather than memcpy'd from the struct
-// so that the two ends agree on the bytes rather than on a compiler's padding.
-constexpr std::size_t kInputBytes = 17;
+// A float goes as its own IEEE-754 bits, little-endian like the integers
+// above. Exact rather than scaled into a fixed-point integer: what these
+// carry is a raw sensor reading whose useful range is the sensor's business,
+// and both ends of this link are built by the same compiler family for the
+// same machine anyway.
+void put_f32(std::vector<uint8_t>& out, float value) {
+    uint32_t bits = 0;
+    static_assert(sizeof(bits) == sizeof(value), "a float is not four bytes here");
+    std::memcpy(&bits, &value, sizeof(bits));
+    put_u32(out, bits);
+}
+
+float read_f32(const uint8_t* data) {
+    const uint32_t bits = read_u32(data);
+    float value = 0.0f;
+    std::memcpy(&value, &bits, sizeof(value));
+    return value;
+}
+
+// The pad, as 46 bytes: 17 of buttons, sticks and touch, then 29 of how the
+// thing is being held (see ExternalMotion). Written out here rather than
+// memcpy'd from the struct so that the two ends agree on the bytes rather
+// than on a compiler's padding.
+constexpr std::size_t kInputBytes = 46;
 
 void put_input(std::vector<uint8_t>& out, const ExternalInput& input) {
     put_u32(out, input.buttons);
@@ -55,6 +76,14 @@ void put_input(std::vector<uint8_t>& out, const ExternalInput& input) {
     out.push_back(input.touching ? 1u : 0u);
     put_u16(out, input.touch_x);
     put_u16(out, input.touch_y);
+    out.push_back(input.motion.present ? 1u : 0u);
+    put_f32(out, input.motion.gyro_x);
+    put_f32(out, input.motion.gyro_y);
+    put_f32(out, input.motion.gyro_z);
+    put_f32(out, input.motion.accel_x);
+    put_f32(out, input.motion.accel_y);
+    put_f32(out, input.motion.accel_z);
+    put_u32(out, input.motion.sampled_us);
 }
 
 ExternalInput read_input(const uint8_t* data) {
@@ -67,6 +96,14 @@ ExternalInput read_input(const uint8_t* data) {
     input.touching = data[12] != 0;
     input.touch_x = read_u16(data + 13);
     input.touch_y = read_u16(data + 15);
+    input.motion.present = data[17] != 0;
+    input.motion.gyro_x = read_f32(data + 18);
+    input.motion.gyro_y = read_f32(data + 22);
+    input.motion.gyro_z = read_f32(data + 26);
+    input.motion.accel_x = read_f32(data + 30);
+    input.motion.accel_y = read_f32(data + 34);
+    input.motion.accel_z = read_f32(data + 38);
+    input.motion.sampled_us = read_u32(data + 42);
     return input;
 }
 
