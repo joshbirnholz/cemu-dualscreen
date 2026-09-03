@@ -223,10 +223,6 @@ void VPADController::update()
 		lock.unlock();
 
 		stop_rumble();
-		// Forwarded unconditionally like the two calls below, not only on the
-		// edge into this state -- see DualscreenSession::SendRumble()'s own
-		// comment for why that is cheap.
-		DualscreenSession::instance().SendRumble(false);
 
 		return;
 	}
@@ -238,16 +234,12 @@ void VPADController::update()
 	m_last_rumble_check = tick;
 
 	const auto& it = m_rumble_queue.front();
+	// Whichever controllers are assigned, companion included -- it advertises
+	// rumble like any other now, so this no longer forwards it separately.
 	if (it[m_parser])
-	{
 		start_rumble();
-		DualscreenSession::instance().SendRumble(true);
-	}
 	else
-	{
 		stop_rumble();
-		DualscreenSession::instance().SendRumble(false);
-	}
 
 	++m_parser;
 	if (m_parser >= it.size())
@@ -818,7 +810,14 @@ bool VPADController::set_default_mapping(const std::shared_ptr<ControllerBase>& 
 	// Only alongside the first-time mapping, so a player who deliberately
 	// turns it off afterwards is not overruled every time this runs.
 	if (mapping_updated && controller->api() == InputAPI::DualScreen)
+	{
 		controller->set_use_motion(true);
+		// And rumble, for the same reason and with the same caveat: the
+		// strength starts at zero for every controller, which is a reasonable
+		// default for a pad that merely can rumble and the wrong one for the
+		// device standing in for the GamePad.
+		controller->set_rumble(1.0f);
+	}
 #endif
 
 	return mapping_updated;

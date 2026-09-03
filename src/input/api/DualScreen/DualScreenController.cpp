@@ -109,6 +109,23 @@ MotionSample DualScreenController::get_motion_sample()
 	return m_motion.getMotionSample();
 }
 
+void DualScreenController::start_rumble()
+{
+	// Honouring the strength the way every other controller here does, so
+	// dragging the slider to zero turns a companion's rumble off.
+	if (m_settings.rumble <= 0)
+		return;
+	DualscreenSession::instance().SendRumble(true);
+}
+
+void DualScreenController::stop_rumble()
+{
+	// Not gated, deliberately -- the same as SDLController. Turning the
+	// strength down mid-rumble must still stop the one already running rather
+	// than leave it on forever.
+	DualscreenSession::instance().SendRumble(false);
+}
+
 std::string DualScreenController::get_button_name(uint64 button) const
 {
 	if (button < kButtonCount)

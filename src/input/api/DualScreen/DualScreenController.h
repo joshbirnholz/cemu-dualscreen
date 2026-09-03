@@ -34,11 +34,15 @@ public:
 	bool has_motion() override;
 	MotionSample get_motion_sample() override;
 
-	// No rumble here on purpose, even though the link carries it. Cemu gates
-	// a controller's rumble on a per-device strength that starts at zero, so
-	// routing it through this would turn off a companion's rumble for anyone
-	// who had not gone looking for the slider. It stays where it already is,
-	// forwarded from VPADController::update().
+	// The link carries a rumble flag rather than a strength, so any setting
+	// above zero means on. Which device actually buzzes is then the ordinary
+	// question of which controller is assigned to the GamePad: assign the
+	// companion and the companion rumbles, assign a pad plugged in here and
+	// that one does.
+	bool has_rumble() override { return true; }
+	void start_rumble() override;
+	void stop_rumble() override;
+
 	std::string get_button_name(uint64 button) const override;
 
 protected:

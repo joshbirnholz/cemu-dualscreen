@@ -354,14 +354,29 @@ void DualscreenSession::SendAudio(ds::ScreenId screen, const int16_t* interleave
 
 void DualscreenSession::SendRumble(bool active)
 {
-	// try_to_lock, same reasoning as SendAudio(): VPADController::update()
-	// calls this from wherever VPADRead's own polling runs, up to sixty times
-	// a second, and giving up on the rare contended call is cheaper than
-	// blocking whichever thread is asking. Nothing is lost by it: an edge that
-	// does not reach the wire is not recorded as sent, so the next call with
-	// the same value sends it -- see ExternalFrameProducer::send_rumble().
-	std::unique_lock lock(m_mutex, std::try_to_lock);
-	if (!lock.owns_lock() || !m_running)
+	// Starting is the call that comes often -- once per poll while a rumble
+	// pattern plays, up to sixty times a second -- and giving up on the rare
+	// contended one is cheaper than blocking whichever thread is asking.
+	// Nothing is lost: an edge that does not reach the wire is not recorded as
+	// sent, so the next call with the same value sends it.
+	//
+	// Stopping is not like that. It happens once, on the falling edge --
+	// EmulatedController::stop_rumble() returns early once it has stopped --
+	// so there is no next call to make good a dropped one, and dropping it
+	// leaves the companion buzzing until something else happens to rumble.
+	// It is rare enough that waiting for the lock costs nothing.
+	std::unique_lock lock(m_mutex, std::defer_lock);
+	if (active)
+	{
+		lock.try_lock();
+		if (!lock.owns_lock())
+			return;
+	}
+	else
+	{
+		lock.lock();
+	}
+	if (!m_running)
 		return;
 
 	m_producer.send_rumble(active);
