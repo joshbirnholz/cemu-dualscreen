@@ -739,6 +739,13 @@ private:
 	// Populates m_dualscreenBlitSupported the first time it is needed and
 	// returns it.
 	bool DualscreenBlitSupported();
+	// Whether the same blit can also reduce the picture, which needs one more
+	// thing than a same-size conversion does: linear filtering on the source
+	// format. Tracked separately from m_dualscreenBlitSupported rather than
+	// folded into it, so a device that could convert but not filter keeps the
+	// conversion it already had instead of losing it to a stricter check.
+	std::optional<bool> m_dualscreenLinearBlitSupported;
+	bool DualscreenLinearBlitSupported();
 	// Ensures m_dualscreenConvert[screenIndex] is a width x height image in
 	// the right colour space, (re)creating it if it is not -- the same
 	// resize-on-demand shape DualscreenReadback's own buffers use. False

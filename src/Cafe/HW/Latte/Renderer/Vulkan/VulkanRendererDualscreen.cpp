@@ -175,6 +175,31 @@ bool VulkanRenderer::DualscreenBlitSupported()
 	return supported;
 }
 
+bool VulkanRenderer::DualscreenLinearBlitSupported()
+{
+	if (m_dualscreenLinearBlitSupported.has_value())
+		return *m_dualscreenLinearBlitSupported;
+
+	// vkCmdBlitImage with VK_FILTER_LINEAR requires the *source* format to
+	// support filtering, which is a separate feature bit from being blittable
+	// at all. Same three source formats DualscreenBlitSupported() checks, and
+	// cached the same way for the same reason.
+	auto supportsLinear = [this](VkFormat format) {
+		VkFormatProperties props;
+		vkGetPhysicalDeviceFormatProperties(m_physicalDevice, format, &props);
+		return (props.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT) != 0;
+	};
+	const bool supported = supportsLinear(VK_FORMAT_A2B10G10R10_UNORM_PACK32) &&
+						   supportsLinear(VK_FORMAT_R8G8B8A8_UNORM) &&
+						   supportsLinear(VK_FORMAT_R8G8B8A8_SRGB);
+	m_dualscreenLinearBlitSupported = supported;
+	if (!supported)
+		cemuLog_log(LogType::Force,
+					"Dualscreen: this device cannot filter while blitting, so screens are handed "
+					"over at the size they were rendered and reduced on the other end instead");
+	return supported;
+}
+
 bool VulkanRenderer::EnsureDualscreenConvertImage(size_t screenIndex, int width, int height, bool srgb)
 {
 	auto& convert = m_dualscreenConvert[screenIndex];
@@ -422,11 +447,68 @@ void VulkanRenderer::HandleDualscreenFrame(LatteTextureView* texView, bool padVi
 		return;
 	}
 
+	// How big this screen is actually worth handing over: whatever the shell
+	// said its own display can show, never larger than what was rendered.
+	// A graphics pack rendering at 4K into a 1280x800 handheld is sixteen
+	// times the pixels, and every one of them would otherwise be read out of
+	// video memory, copied through shared memory, and then scaled back down
+	// on the shell's CPU. The blit below already resizes for nothing; the
+	// only reason it did not until now is that nobody told this end what
+	// size to aim for. See DualscreenSession::CaptureSize().
+	sint32 captureWidth = width;
+	sint32 captureHeight = height;
+	{
+		int fittedWidth = width;
+		int fittedHeight = height;
+		session.CaptureSize(width, height, fittedWidth, fittedHeight);
+		captureWidth = (sint32)fittedWidth;
+		captureHeight = (sint32)fittedHeight;
+	}
+	// Only worth claiming when the blit can actually filter -- reducing with
+	// NEAREST would alias so badly that handing the whole picture over and
+	// letting the shell scale it properly is the better trade.
+	const bool needsResize = (captureWidth != width || captureHeight != height) &&
+							 DualscreenLinearBlitSupported();
+	if (!needsResize)
+	{
+		// Back to the rendered size, so that a blit taken for one of the
+		// conversion reasons below does not quietly resize with NEAREST after
+		// the filtered path was ruled out.
+		captureWidth = width;
+		captureHeight = height;
+	}
+
+	// Whether this frame needs converting before DualscreenDrain can hand it
+	// to PublishScreen as-is, and if so whether that conversion happens here
+	// on the GPU or is left to DualscreenDrain's own CPU-side unpack -- see
+	// m_dualscreenConvert's own comment for why the GPU path exists at all.
+	// Two things can require it: a packed scan buffer (isPacked1010102), or
+	// this screen's current gamma setting no longer matching what this
+	// texture is tagged as -- DualscreenDrain already handles the latter on
+	// its own for whatever this leaves unconverted, so a device that cannot
+	// blit still gets a correct picture, just not the free one.
+	const bool sourceIsSRGB = (format == VK_FORMAT_R8G8B8A8_SRGB);
+	const bool dstUsesSRGB = padView ? LatteGPUState.drcBufferUsesSRGB : LatteGPUState.tvBufferUsesSRGB;
+	const bool needsConversion = isPacked1010102 || (sourceIsSRGB != dstUsesSRGB);
+	// Resizing is the second reason to go through the blit, and unlike the
+	// conversions above it is not something DualscreenDrain can fall back to
+	// doing on the CPU -- a device that cannot blit simply hands the whole
+	// rendered picture over and lets the shell scale it, exactly as before.
+	const bool useBlit = (needsConversion || needsResize) && DualscreenBlitSupported() &&
+						 EnsureDualscreenConvertImage(screenIndex, captureWidth, captureHeight,
+													  dstUsesSRGB);
+	// What actually ends up in the buffer: the reduced size only if the blit
+	// that would produce it is really happening.
+	const sint32 outWidth = useBlit ? captureWidth : width;
+	const sint32 outHeight = useBlit ? captureHeight : height;
+
 	auto& slot = m_dualscreenReadback[screenIndex][m_dualscreenNextSlot[screenIndex]];
 	if (slot.pending.load(std::memory_order_acquire))
 		return; // still in flight: this end is behind, so this frame is dropped
 
-	const size_t needed = (size_t)width * height * 4;
+	// Sized for what the copy will actually write, which is the reduced
+	// picture only when the blit that produces it is really happening.
+	const size_t needed = (size_t)outWidth * outHeight * 4;
 	if (slot.capacity < needed)
 	{
 		if (slot.mapped)
@@ -454,26 +536,11 @@ void VulkanRenderer::HandleDualscreenFrame(LatteTextureView* texView, bool padVi
 	auto textureVk = baseImageTex->GetImageObj();
 	textureVk->flagForCurrentCommandBuffer();
 
-	// Whether this frame needs converting before DualscreenDrain can hand it
-	// to PublishScreen as-is, and if so whether that conversion happens here
-	// on the GPU or is left to DualscreenDrain's own CPU-side unpack -- see
-	// m_dualscreenConvert's own comment for why the GPU path exists at all.
-	// Two things can require it: a packed scan buffer (isPacked1010102), or
-	// this screen's current gamma setting no longer matching what this
-	// texture is tagged as -- DualscreenDrain already handles the latter on
-	// its own for whatever this leaves unconverted, so a device that cannot
-	// blit still gets a correct picture, just not the free one.
-	const bool sourceIsSRGB = (format == VK_FORMAT_R8G8B8A8_SRGB);
-	const bool dstUsesSRGB = padView ? LatteGPUState.drcBufferUsesSRGB : LatteGPUState.tvBufferUsesSRGB;
-	const bool needsConversion = isPacked1010102 || (sourceIsSRGB != dstUsesSRGB);
-	const bool useBlit = needsConversion && DualscreenBlitSupported() &&
-						 EnsureDualscreenConvertImage(screenIndex, width, height, dstUsesSRGB);
-
 	VkBufferImageCopy region{};
 	region.bufferOffset = 0;
 	// Tightly packed, which is what makes the stride the width on the far side.
-	region.bufferRowLength = width;
-	region.bufferImageHeight = height;
+	region.bufferRowLength = outWidth;
+	region.bufferImageHeight = outHeight;
 	region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
 	// m_dualscreenConvert is always a fresh single-layer image (see its own
 	// comment), unlike the source texture this screen's slices can come from.
@@ -481,7 +548,7 @@ void VulkanRenderer::HandleDualscreenFrame(LatteTextureView* texView, bool padVi
 	region.imageSubresource.layerCount = 1;
 	region.imageSubresource.mipLevel = 0;
 	region.imageOffset = {0, 0, 0};
-	region.imageExtent = {(uint32)width, (uint32)height, 1};
+	region.imageExtent = {(uint32)outWidth, (uint32)outHeight, 1};
 
 	if (useBlit)
 	{
@@ -510,24 +577,24 @@ void VulkanRenderer::HandleDualscreenFrame(LatteTextureView* texView, bool padVi
 			convert.everBlitted ? VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL : VK_IMAGE_LAYOUT_UNDEFINED,
 			VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
 
-		VkOffset3D blitSize{width, height, 1};
 		VkImageBlit blitRegion{};
 		blitRegion.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
 		blitRegion.srcSubresource.mipLevel = 0;
 		blitRegion.srcSubresource.baseArrayLayer = texViewVk->firstSlice;
 		blitRegion.srcSubresource.layerCount = 1;
-		blitRegion.srcOffsets[1] = blitSize;
+		blitRegion.srcOffsets[1] = {width, height, 1};
 		blitRegion.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
 		blitRegion.dstSubresource.mipLevel = 0;
 		blitRegion.dstSubresource.baseArrayLayer = 0;
 		blitRegion.dstSubresource.layerCount = 1;
-		blitRegion.dstOffsets[1] = blitSize;
-		// NEAREST: source and destination are always the same size here --
-		// this converts format only, never scale -- so there is nothing for
-		// a filter to do.
+		blitRegion.dstOffsets[1] = {captureWidth, captureHeight, 1};
+		// LINEAR only when the two sizes actually differ. A same-size blit is
+		// a format conversion with nothing for a filter to do, and NEAREST
+		// there is both free and exactly right; a reduction with NEAREST
+		// would alias badly, which is the one thing a downscale must not do.
 		vkCmdBlitImage(m_state.currentCommandBuffer, textureVk->m_image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
 					   convert.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blitRegion,
-					   VK_FILTER_NEAREST);
+					   needsResize ? VK_FILTER_LINEAR : VK_FILTER_NEAREST);
 		convert.everBlitted = true;
 
 		// Source back to its resting layout -- the blit above was its only use
@@ -567,8 +634,8 @@ void VulkanRenderer::HandleDualscreenFrame(LatteTextureView* texView, bool padVi
 																   baseImageTex->GetDefaultLayout());
 	}
 
-	slot.width = width;
-	slot.height = height;
+	slot.width = outWidth;
+	slot.height = outHeight;
 	if (useBlit)
 	{
 		// Already converted on the GPU above -- DualscreenDrain's fast,

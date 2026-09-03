@@ -397,6 +397,12 @@ void ExternalFrameLink::close() {
     // never part of.
     sent_input_ = ExternalInput();
     have_sent_input_ = false;
+    // Same reasoning for what screen and size were last asked for: a request
+    // that only matched the producer that has gone would leave the next one
+    // never told what to capture at all.
+    sent_screen_.reset();
+    sent_max_width_ = -1;
+    sent_max_height_ = -1;
     rumble_active_ = false;
     have_new_rumble_ = false;
 }
@@ -411,6 +417,11 @@ bool ExternalFrameLink::accept_peer(std::string* error) {
         return false;
     }
     peer_fd_ = fd;
+    // A fresh producer has been told nothing yet, whatever the last one was
+    // told -- see close() for why these are tracked at all.
+    sent_screen_.reset();
+    sent_max_width_ = -1;
+    sent_max_height_ = -1;
     // The memory goes over first, before anything is said about it, so a
     // producer never has to handle a frame announcement for memory it cannot
     // see yet.
@@ -657,7 +668,17 @@ void ExternalFrameLink::send_input(const ExternalInput& input) {
     }
 }
 
-void ExternalFrameLink::request_screen(std::optional<ScreenId> screen) {
+void ExternalFrameLink::request_screen(std::optional<ScreenId> screen, int max_width,
+                                       int max_height) {
+    // Clamped rather than trusted: these come from a companion device's own
+    // reported window size, and a negative or absurd one must not turn into a
+    // capture size the producer then tries to allocate for.
+    max_width = std::max(0, std::min(max_width, ExternalSharedHeader::kMaxWidth));
+    max_height = std::max(0, std::min(max_height, ExternalSharedHeader::kMaxHeight));
+    if (screen == sent_screen_ && max_width == sent_max_width_ &&
+        max_height == sent_max_height_) {
+        return;  // Nothing has changed; see sent_screen_.
+    }
     std::vector<uint8_t> body;
     // 0/1 for a screen, 2 for none -- ScreenId has no "none" of its own (see
     // screen_id.hpp), so that has to be spelled out here rather than cast.
@@ -666,7 +687,21 @@ void ExternalFrameLink::request_screen(std::optional<ScreenId> screen) {
     } else {
         body.push_back(*screen == ScreenId::Top ? 0u : 1u);
     }
-    send_control(ExternalControl::RequestScreen, body);
+    // Appended after the byte that used to be the whole message, so a
+    // producer built before this existed reads the screen and ignores the
+    // rest rather than failing to parse it at all.
+    const uint16_t width = static_cast<uint16_t>(max_width);
+    const uint16_t height = static_cast<uint16_t>(max_height);
+    body.push_back(static_cast<uint8_t>(width & 0xFFu));
+    body.push_back(static_cast<uint8_t>((width >> 8) & 0xFFu));
+    body.push_back(static_cast<uint8_t>(height & 0xFFu));
+    body.push_back(static_cast<uint8_t>((height >> 8) & 0xFFu));
+    if (!send_control(ExternalControl::RequestScreen, body)) {
+        return;  // Not recorded as sent, so the next call tries again.
+    }
+    sent_screen_ = screen;
+    sent_max_width_ = max_width;
+    sent_max_height_ = max_height;
 }
 
 // --- producer ---------------------------------------------------------------
@@ -897,6 +932,17 @@ bool ExternalFrameProducer::poll(bool& out_reset_requested, std::string* error) 
                 } else {
                     requested_screen_.reset();
                 }
+                // Optional tail -- a consumer built before the size existed
+                // sends only the screen byte, which reads as "no preference".
+                if (body.size() >= 5) {
+                    requested_max_width_ = static_cast<int>(static_cast<uint16_t>(
+                        body[1] | (static_cast<uint16_t>(body[2]) << 8)));
+                    requested_max_height_ = static_cast<int>(static_cast<uint16_t>(
+                        body[3] | (static_cast<uint16_t>(body[4]) << 8)));
+                } else {
+                    requested_max_width_ = 0;
+                    requested_max_height_ = 0;
+                }
             }
         } else if (kind == ExternalControl::Shutdown) {
             if (error != nullptr) *error = "the far end ended the session";
@@ -932,7 +978,7 @@ bool ExternalFrameLink::take_frame(ScreenId, ExternalFrame&) { return false; }
 void ExternalFrameLink::take_audio(ScreenId, std::vector<int16_t>& out) { out.clear(); }
 void ExternalFrameLink::request_reset() {}
 void ExternalFrameLink::send_input(const ExternalInput&) {}
-void ExternalFrameLink::request_screen(std::optional<ScreenId>) {}
+void ExternalFrameLink::request_screen(std::optional<ScreenId>, int, int) {}
 bool ExternalFrameLink::take_rumble(bool&) { return false; }
 bool ExternalFrameLink::accept_peer(std::string*) { return false; }
 bool ExternalFrameLink::read_messages(std::string*) { return false; }

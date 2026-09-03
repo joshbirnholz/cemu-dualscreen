@@ -107,6 +107,8 @@ void DualscreenSession::Start(int tvWidth, int tvHeight, int padWidth, int padHe
 	m_requestedScreen.reset();
 	m_runningAtomic.store(true, std::memory_order_relaxed);
 	m_requestedScreenAtomic.store(-1, std::memory_order_relaxed);
+	m_requestedMaxWidthAtomic.store(0, std::memory_order_relaxed);
+	m_requestedMaxHeightAtomic.store(0, std::memory_order_relaxed);
 	// Nothing a previous session was still holding belongs to this one. Taken
 	// in the same order as everywhere else -- m_mutex is already held here.
 	{
@@ -127,6 +129,8 @@ void DualscreenSession::Stop()
 	m_requestedScreen.reset();
 	m_runningAtomic.store(false, std::memory_order_relaxed);
 	m_requestedScreenAtomic.store(-1, std::memory_order_relaxed);
+	m_requestedMaxWidthAtomic.store(0, std::memory_order_relaxed);
+	m_requestedMaxHeightAtomic.store(0, std::memory_order_relaxed);
 	// Nothing a previous session was still holding belongs to this one. Taken
 	// in the same order as everywhere else -- m_mutex is already held here.
 	{
@@ -167,6 +171,8 @@ void DualscreenSession::Poll()
 		m_requestedScreen.reset();
 		m_runningAtomic.store(false, std::memory_order_relaxed);
 		m_requestedScreenAtomic.store(-1, std::memory_order_relaxed);
+	m_requestedMaxWidthAtomic.store(0, std::memory_order_relaxed);
+	m_requestedMaxHeightAtomic.store(0, std::memory_order_relaxed);
 		return;
 	}
 	// Whichever screen the shell asked for -- absent if it has asked for
@@ -177,6 +183,12 @@ void DualscreenSession::Poll()
 	m_requestedScreenAtomic.store(
 		m_requestedScreen ? (*m_requestedScreen == ds::ScreenId::Top ? 0 : 1) : -1,
 		std::memory_order_relaxed);
+	// Published after the screen itself, and read the other way round in
+	// CaptureSize(): a frame that briefly sees the old cap alongside the new
+	// screen is one frame at the wrong size, which the shell caps again on
+	// its own side anyway.
+	m_requestedMaxWidthAtomic.store(m_producer.requested_max_width(), std::memory_order_relaxed);
+	m_requestedMaxHeightAtomic.store(m_producer.requested_max_height(), std::memory_order_relaxed);
 	// The only reason this end's own window should ever show anything but
 	// its usual default: the shell is watching the television, so something
 	// local has to show the other one instead. Nothing requested is left
@@ -227,6 +239,19 @@ bool DualscreenSession::ShouldCapture(ds::ScreenId screen)
 		return false;
 	const int requested = m_requestedScreenAtomic.load(std::memory_order_relaxed);
 	return requested == (screen == ds::ScreenId::Top ? 0 : 1);
+}
+
+void DualscreenSession::CaptureSize(int sourceWidth, int sourceHeight, int& outWidth,
+									int& outHeight)
+{
+	// The arithmetic lives in the link's own header so that both ends land on
+	// the same number to the pixel -- see ds::fit_within(). Reducing here to
+	// something a pixel off what the shell asked for would just make it scale
+	// again, which is the whole cost this exists to remove.
+	ds::fit_within(sourceWidth, sourceHeight,
+				   m_requestedMaxWidthAtomic.load(std::memory_order_relaxed),
+				   m_requestedMaxHeightAtomic.load(std::memory_order_relaxed), outWidth,
+				   outHeight);
 }
 
 void DualscreenSession::PublishScreen(ds::ScreenId screen, uint64_t serial, const uint32_t* pixels,

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
@@ -75,11 +76,12 @@ enum class ExternalControl : uint8_t {
     Reset = 4,     // consumer -> producer, the player chose Reset Game
     Shutdown = 5,  // either way, "this session is over"
     Input = 6,     // consumer -> producer, an ExternalInput
-    // consumer -> producer, "capture and send me this screen (or neither)" --
-    // sendable at any point in a session, not just at connect, since what a
-    // shell wants can change as devices come and go. Absent means the
-    // producer's own screen(s) are its own business again: nothing captured,
-    // nothing streamed, exactly like running without a shell attached at all.
+    // consumer -> producer, "capture and send me this screen (or neither), at
+    // no more than this size" -- sendable at any point in a session, not just
+    // at connect, since what a shell wants can change as devices come and go.
+    // Absent means the producer's own screen(s) are its own business again:
+    // nothing captured, nothing streamed, exactly like running without a
+    // shell attached at all.
     RequestScreen = 7,
     // producer -> consumer, "the GamePad's motor is on/off". Sent on every
     // change, never on a timer -- see ExternalFrameProducer::send_rumble().
@@ -135,6 +137,45 @@ struct ExternalInput {
     }
     bool operator!=(const ExternalInput& other) const { return !(*this == other); }
 };
+
+// The size to reduce a `width` x `height` picture to so it fits inside
+// `max_width` x `max_height` without changing its shape. Never enlarges: a
+// consumer with a display bigger than the picture is not a reason to invent
+// detail that was never rendered. Zero (or negative) for either cap means no
+// cap at all, and the size comes back unchanged.
+//
+// Here, in the header both ends share, because both ends have to agree on it:
+// the producer resizes to this before publishing, and the consumer's own cap
+// then has nothing left to do. Two copies of this arithmetic that rounded
+// differently would mean a picture arriving a few pixels off what was asked
+// for, and the consumer paying for a scale it thought it had avoided.
+inline void fit_within(int width, int height, int max_width, int max_height, int& out_width,
+                       int& out_height) {
+    out_width = width;
+    out_height = height;
+    if (width <= 0 || height <= 0 || max_width <= 0 || max_height <= 0) {
+        return;
+    }
+    const double scale = std::min(static_cast<double>(max_width) / width,
+                                  static_cast<double>(max_height) / height);
+    if (scale >= 1.0) {
+        return;
+    }
+    // Landing on a multiple of 16, with a floor, for the same reasons the
+    // consumer's own encode-size cap does (see compute_capped_encode_size in
+    // host_session.cpp, whose constants these are): 4:2:0 needs even
+    // dimensions, a software H.264 encode of a small non-macroblock-aligned
+    // width has been seen to corrupt memory outright, and 64 is below
+    // anything worth encoding but above a degenerate size. Matching that
+    // function exactly is the point -- it is what makes it a no-op on a
+    // picture already reduced here, rather than a second scale for the sake
+    // of a few rows.
+    constexpr int kMinDimension = 64;
+    constexpr int kAlignment = 16;
+    out_width = std::max(kMinDimension, static_cast<int>(width * scale) / kAlignment * kAlignment);
+    out_height =
+        std::max(kMinDimension, static_cast<int>(height * scale) / kAlignment * kAlignment);
+}
 
 // How the shared memory is arranged. Both sides compute this from the same
 // numbers rather than sending it, so there is one description of the layout
@@ -238,7 +279,15 @@ public:
     // through the link at all -- so this is worth sending every time what is
     // wanted changes, including down to nothing when there is nowhere local
     // to show it.
-    void request_screen(std::optional<ScreenId> screen);
+    // `max_width`/`max_height` cap what is wanted: a producer rendering above
+    // the size the far end can actually show (a Wii U emulator with a 4K
+    // graphics pack feeding a 1280x800 handheld) should reduce the picture
+    // itself, where it already has the frame on a GPU, rather than handing
+    // over sixteen times the pixels for this end to copy across a socket and
+    // then scale down on a CPU. Both zero means "whatever size you have",
+    // which is what a consumer that does not know the far end's display size
+    // yet asks for. See fit_within() for the arithmetic both ends agree on.
+    void request_screen(std::optional<ScreenId> screen, int max_width = 0, int max_height = 0);
 
     // The GamePad motor's state as of the last thing the producer sent, and
     // whether anything new has arrived since the last call -- a one-shot,
@@ -285,6 +334,11 @@ private:
     Pending pending_[2];
     ExternalInput sent_input_;
     bool have_sent_input_ = false;
+    // What request_screen() last sent, so a repeat of the same request costs
+    // nothing -- the same "only what changed" shape send_input() uses.
+    std::optional<ScreenId> sent_screen_;
+    int sent_max_width_ = -1;
+    int sent_max_height_ = -1;
     bool rumble_active_ = false;
     bool have_new_rumble_ = false;
 };
@@ -339,6 +393,15 @@ public:
     // asked for yet or the consumer explicitly asked for nothing.
     std::optional<ScreenId> requested_screen() const { return requested_screen_; }
 
+    // The largest picture the consumer wants for that screen, as of the last
+    // poll(). Both zero means it expressed no preference and the producer
+    // should hand over whatever it has. A producer that can resize cheaply --
+    // one with the frame already on a GPU -- should reduce to fit_within()
+    // of these before publishing; one that cannot is free to ignore them,
+    // since the consumer caps the picture again on its own side regardless.
+    int requested_max_width() const { return requested_max_width_; }
+    int requested_max_height() const { return requested_max_height_; }
+
 private:
     ExternalSharedHeader* header() { return static_cast<ExternalSharedHeader*>(memory_); }
 
@@ -350,6 +413,8 @@ private:
     ExternalInput input_;
     bool have_input_ = false;
     std::optional<ScreenId> requested_screen_;
+    int requested_max_width_ = 0;
+    int requested_max_height_ = 0;
     bool sent_rumble_ = false;
     bool have_sent_rumble_ = false;
 };
