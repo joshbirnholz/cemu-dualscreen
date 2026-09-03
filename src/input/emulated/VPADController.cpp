@@ -49,67 +49,9 @@ enum ControllerVPADMapping2 : uint32
 
 namespace
 {
-	// What the shell's pad means here. A table rather than a switch so that a
-	// button added at either end is one line, and so that the two ends can be
-	// read side by side.
-	constexpr struct
-	{
-		ds::ExternalButton button;
-		uint32 hold;
-	} s_dualscreenButtons[] = {
-		{ds::ExternalButton::A, VPAD_A},
-		{ds::ExternalButton::B, VPAD_B},
-		{ds::ExternalButton::X, VPAD_X},
-		{ds::ExternalButton::Y, VPAD_Y},
-		{ds::ExternalButton::L, VPAD_L},
-		{ds::ExternalButton::R, VPAD_R},
-		{ds::ExternalButton::Zl, VPAD_ZL},
-		{ds::ExternalButton::Zr, VPAD_ZR},
-		{ds::ExternalButton::Plus, VPAD_PLUS},
-		{ds::ExternalButton::Minus, VPAD_MINUS},
-		{ds::ExternalButton::Up, VPAD_UP},
-		{ds::ExternalButton::Down, VPAD_DOWN},
-		{ds::ExternalButton::Left, VPAD_LEFT},
-		{ds::ExternalButton::Right, VPAD_RIGHT},
-		{ds::ExternalButton::LeftStick, VPAD_STICK_L},
-		{ds::ExternalButton::RightStick, VPAD_STICK_R},
-	};
-
-	uint32 DualscreenHold(const ds::ExternalInput& pad)
-	{
-		uint32 hold = 0;
-		for (const auto& entry : s_dualscreenButtons)
-		{
-			if (pad.pressed(entry.button))
-				hold |= entry.hold;
-		}
-		return hold;
-	}
-
-	glm::vec2 DualscreenStick(sint16 x, sint16 y)
-	{
-		// The shell sends libretro's range with y positive downwards; here y is
-		// positive up. It also sends the stick raw and undeadzoned by design --
-		// its own submit_input leaves that to whatever is on the other end,
-		// since a libretro core normally deadzones its own analog input. Cemu's
-		// own controllers never reach VPADRead un-deadzoned, because
-		// ControllerBase::apply_axis_setting handles it first; this is that same
-		// scaled radial deadzone (and the same 0.15 XInputController defaults
-		// to), so a stick at rest reads as centred here the way it would
-		// plugged into Cemu directly, rather than as the small constant
-		// deflection a real stick's resting position rarely lands exactly on.
-		constexpr float kRange = 32767.0f;
-		constexpr float kDeadzone = 0.15f;
-		glm::vec2 axis{std::clamp(x / kRange, -1.0f, 1.0f), std::clamp(-y / kRange, -1.0f, 1.0f)};
-		const float len = glm::length(axis);
-		if (len < kDeadzone)
-			return {0.0f, 0.0f};
-		axis = glm::normalize(axis) * ((len - kDeadzone) / (1.0f - kDeadzone));
-		if (glm::length(axis) > 1.0f)
-			axis = glm::normalize(axis);
-		return axis;
-	}
-
+	// The shell's touch, in a GamePad's own touch-screen coordinates. The one
+	// part of its pad that cannot go through the player's mapping, since a
+	// point on a screen is not a control a mapping can name.
 	void DualscreenTouch(VPADStatus_t& status, const ds::ExternalInput& pad, glm::ivec2& lastTouch)
 	{
 		status.tpData.touch = kTpTouchOff;
@@ -142,9 +84,18 @@ namespace
 
 void VPADController::VPADRead(VPADStatus_t& status, const BtnRepeat& repeat)
 {
-	// A shell holding this Cafe's screens holds its GamePad too, all of it, so
-	// that the device the player is actually looking at is the one they are
-	// pressing. Cemu's own controllers stay in charge until one turns up.
+	// A shell holding this Cafe's screens holds its GamePad too, so that the
+	// device the player is actually looking at is the one they are pressing.
+	//
+	// Its buttons and sticks no longer arrive here, though: they come in as an
+	// ordinary controller (see DualScreenControllerProvider), through the same
+	// mapping every other pad goes through, so a game wanting its own control
+	// scheme has the usual place to say so. This used to replace the player's
+	// mapping outright while a shell was attached, which made per-game schemes
+	// impossible and made a locally configured pad silently stop working.
+	//
+	// Touch is the exception below, and stays read straight off the link: a
+	// point on a screen is not something a button mapping can express.
 	ds::ExternalInput dualscreenPad;
 	const bool hasDualscreenPad = DualscreenSession::instance().ReadInput(dualscreenPad);
 
@@ -152,13 +103,6 @@ void VPADController::VPADRead(VPADStatus_t& status, const BtnRepeat& repeat)
 	m_screen_active = false;
 
 	glm::vec2 axis, rotation;
-	if (hasDualscreenPad)
-	{
-		status.hold |= DualscreenHold(dualscreenPad);
-		axis = DualscreenStick(dualscreenPad.left_x, dualscreenPad.left_y);
-		rotation = DualscreenStick(dualscreenPad.right_x, dualscreenPad.right_y);
-	}
-	else
 	{
 		controllers_update_states();
 		for (uint32 i = kButtonId_A; i < kButtonId_Max; ++i)
@@ -257,67 +201,12 @@ void VPADController::VPADRead(VPADStatus_t& status, const BtnRepeat& repeat)
 	status.dir.y = {0, 1, 0};
 	status.dir.z = {0, 0, 1};
 	status.accXY = {1.0f, 0.0f};
-	// The shell's, when the device standing in for the GamePad is reporting
-	// how it is being held. That device is the one in the player's hands and
-	// the one they are aiming at a screen, so it wins outright over anything
-	// plugged in here -- the same way its buttons, sticks and touches do
-	// above.
-	//
-	// Without one, update_motion() reads whatever Cemu's own controllers are
-	// configured for -- a DSU client pointed at a local or a network gyro
-	// server among them -- exactly as it always has. That path stays
-	// unsuppressed even during a shell session: a shell whose device has no
-	// sensors is not a reason to lose the gyro somebody has wired up here.
-	if (hasDualscreenPad && dualscreenPad.motion.present)
-	{
-		// The interval between the two samples' own timestamps, by the
-		// sending device's clock. Not between their arrivals here: they came
-		// over a network, and a sample held up by a busy moment on the wire
-		// is not a movement that took longer to happen.
-		//
-		// Unsigned subtraction, which is what makes the wrap that timestamp
-		// has every seventy-one minutes come out right rather than as one
-		// enormous step.
-		float seconds = 0.0f;
-		if (m_have_dualscreen_motion)
-		{
-			const uint32 elapsed = dualscreenPad.motion.sampled_us - m_last_dualscreen_motion_us;
-			seconds = (float)elapsed / 1000000.0f;
-		}
-		m_last_dualscreen_motion_us = dualscreenPad.motion.sampled_us;
-		m_have_dualscreen_motion = true;
-		// Clamped for the first sample of a session (nothing to measure
-		// against) and for a gap long enough to mean the link stopped rather
-		// than the player moved slowly -- an unbounded step there would spin
-		// the fused orientation somewhere arbitrary in one frame.
-		if (seconds <= 0.0f || seconds > 1.0f)
-			seconds = 1.0f / 60.0f;
-
-		// Into the axes and units this handler is fed everywhere else. The
-		// shell sends SDL's convention unchanged (see ExternalMotion), so
-		// this is exactly the transform SDLControllerProvider applies to a
-		// controller plugged in here -- which is what makes a Steam Deck held
-		// across the link behave like the same Deck plugged into this
-		// machine, rather than like a second, subtly different device.
-		constexpr float kGravity = 9.81f;
-		const float gx = dualscreenPad.motion.gyro_x;
-		const float gy = -dualscreenPad.motion.gyro_y;
-		const float gz = -dualscreenPad.motion.gyro_z;
-		const float ax = -dualscreenPad.motion.accel_x / kGravity;
-		const float ay = dualscreenPad.motion.accel_y / kGravity;
-		const float az = dualscreenPad.motion.accel_z / kGravity;
-		m_dualscreen_motion.processMotionSample(seconds, gx, gy, gz, ax, ay, az);
-		MotionSample sample = m_dualscreen_motion.getMotionSample();
-		apply_motion_sample(status, sample);
-	}
-	else
-	{
-		// Whatever it last said stops being true once it stops saying it, so
-		// the next sample after a gap starts a fresh interval rather than
-		// integrating across the whole silence.
-		m_have_dualscreen_motion = false;
-		update_motion(status);
-	}
+	// Including the shell's, now: the companion advertises motion as an
+	// ordinary controller, so update_motion() picks it up through the same
+	// mapping as any other pad with a gyro in it. That also means a player who
+	// would rather aim with something plugged in here can simply map that
+	// instead, which the old unconditional override gave them no way to do.
+	update_motion(status);
 }
 
 void VPADController::update()
@@ -821,6 +710,53 @@ bool VPADController::set_default_mapping(const std::shared_ptr<ControllerBase>& 
 		break;
 	}
 #endif
+#if HAS_DUALSCREEN_INPUT
+	case InputAPI::DualScreen:
+	{
+		// Straight through: the companion's raw buttons are already a Wii U
+		// GamePad's, in ds::ExternalButton order, so kButton0 is A and the
+		// rest follow. This is what the old hardcoded override did, kept as
+		// the default so a fresh session still works with nothing configured
+		// -- the difference being that a player can now change any of it.
+		mapping =
+		{
+			{kButtonId_A, kButton0},
+			{kButtonId_B, kButton1},
+			{kButtonId_X, kButton2},
+			{kButtonId_Y, kButton3},
+
+			{kButtonId_L, kButton4},
+			{kButtonId_R, kButton5},
+			{kButtonId_ZL, kButton6},
+			{kButtonId_ZR, kButton7},
+
+			{kButtonId_Plus, kButton8},
+			{kButtonId_Minus, kButton9},
+
+			{kButtonId_Up, kButton10},
+			{kButtonId_Down, kButton11},
+			{kButtonId_Left, kButton12},
+			{kButtonId_Right, kButton13},
+
+			{kButtonId_StickL, kButton14},
+			{kButtonId_StickR, kButton15},
+
+			// The sticks arrive with y positive up -- see the conversion in
+			// DualScreenController::raw_state -- so up is the positive axis,
+			// as it is for XInput below rather than for SDL above.
+			{kButtonId_StickL_Up, kAxisYP},
+			{kButtonId_StickL_Down, kAxisYN},
+			{kButtonId_StickL_Left, kAxisXN},
+			{kButtonId_StickL_Right, kAxisXP},
+
+			{kButtonId_StickR_Up, kRotationYP},
+			{kButtonId_StickR_Down, kRotationYN},
+			{kButtonId_StickR_Left, kRotationXN},
+			{kButtonId_StickR_Right, kRotationXP},
+		};
+		break;
+	}
+#endif
 	case InputAPI::XInput:
 	{
 		mapping =
@@ -870,6 +806,20 @@ bool VPADController::set_default_mapping(const std::shared_ptr<ControllerBase>& 
 				mapping_updated = true;
 			}
 		});
+
+#if HAS_DUALSCREEN_INPUT
+	// A controller's motion is off until switched on, which is the right
+	// default for a pad that merely happens to have a gyro in it. A companion
+	// is not that: it is the device standing in for the GamePad, and the
+	// reason it reports motion at all is that the game is meant to read it.
+	// Left off, the gyro would simply stop working for everyone who did not
+	// go looking for the checkbox.
+	//
+	// Only alongside the first-time mapping, so a player who deliberately
+	// turns it off afterwards is not overruled every time this runs.
+	if (mapping_updated && controller->api() == InputAPI::DualScreen)
+		controller->set_use_motion(true);
+#endif
 
 	return mapping_updated;
 }

@@ -7,6 +7,7 @@
 
 #include "input/api/Keyboard/KeyboardController.h"
 #include "input/api/DSU/DSUController.h"
+#include "input/api/DualScreen/DualScreenController.h"
 #include "input/api/GameCube/GameCubeController.h"
 
 #if BOOST_OS_WINDOWS
@@ -85,6 +86,11 @@ ControllerPtr ControllerFactory::CreateController(InputAPI::Type api, std::strin
 			const auto index = ConvertString<uint32>(uuid);
 			return std::make_shared<DSUController>(index);
 		}
+#endif
+#if HAS_DUALSCREEN_INPUT
+	case InputAPI::DualScreen:
+		// Only ever one, so the uuid carries nothing to distinguish.
+		return std::make_shared<DualScreenController>();
 #endif
 #if defined(HAS_GAMECUBE) && HAS_GAMECUBE && defined(HAS_LIBUSB)
 	case InputAPI::GameCube:
@@ -167,6 +173,10 @@ ControllerProviderPtr ControllerFactory::CreateControllerProvider(InputAPI::Type
 			}
 		}
 
+#endif
+#if HAS_DUALSCREEN_INPUT
+	case InputAPI::DualScreen:
+		return std::make_shared<DualScreenControllerProvider>();
 #endif
 #if defined(HAS_GAMECUBE) && HAS_GAMECUBE && defined(HAS_LIBUSB)
 	case InputAPI::GameCube:

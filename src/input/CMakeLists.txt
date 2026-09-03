@@ -15,6 +15,10 @@ add_library(CemuInput
 	api/DSU/DSUControllerProvider.h
 	api/DSU/DSUMessages.h
 	api/DSU/DSUMessages.cpp
+	api/DualScreen/DualScreenController.h
+	api/DualScreen/DualScreenController.cpp
+	api/DualScreen/DualScreenControllerProvider.h
+	api/DualScreen/DualScreenControllerProvider.cpp
 	api/Keyboard/KeyboardControllerProvider.h
 	api/Keyboard/KeyboardControllerProvider.cpp
 	api/Keyboard/KeyboardController.cpp

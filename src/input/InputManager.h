@@ -15,6 +15,7 @@
 
 #include "input/api/Keyboard/KeyboardControllerProvider.h"
 #include "input/api/DSU/DSUControllerProvider.h"
+#include "input/api/DualScreen/DualScreenControllerProvider.h"
 #include "input/api/GameCube/GameCubeControllerProvider.h"
 
 #include "input/emulated/VPADController.h"

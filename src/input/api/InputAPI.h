@@ -17,6 +17,13 @@ namespace InputAPI
 		WGIGamepad,
 		WGIRawController,
 
+		// The device holding this Cafe's GamePad screen -- see
+		// DualScreenControllerProvider. At the end rather than beside the
+		// others it resembles: these are persisted by name rather than by
+		// value, but the enum also indexes InputManager's provider array, so
+		// inserting in the middle would renumber every entry after it.
+		DualScreen,
+
 		MAX
 	};
 
@@ -42,6 +49,8 @@ namespace InputAPI
 			return "WGIRawController";
 		case SDLController:
 			return "SDLController";
+		case DualScreen:
+			return "DualScreen";
 		default:
 			break;
 		}
@@ -65,6 +74,8 @@ namespace InputAPI
 			return DSUClient;
 		else if (str == to_string(SDLController))
 			return SDLController;
+		else if (str == to_string(DualScreen))
+			return DualScreen;
 		else if (str == "DSU") // legacy
 			return DSUClient;
 		

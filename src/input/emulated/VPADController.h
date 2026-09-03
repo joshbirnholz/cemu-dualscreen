@@ -113,18 +113,13 @@ private:
 	// through a controller plugged in here report motion through exactly the
 	// same arithmetic rather than through two copies of it.
 	static void apply_motion_sample(VPADStatus_t& status, MotionSample& sample);
-	// The shell's own motion, integrated here. The shell sends raw gyroscope
-	// and accelerometer readings and nothing else -- see ExternalMotion --
-	// because turning those into an orientation is what this handler already
-	// does, tuned to what a real GamePad reports. A second integration on the
-	// shell's side would only be a different answer to the same question.
-	WiiUMotionHandler m_dualscreen_motion;
-	// The timestamp of the last sample fed into it, by the sending device's
-	// own clock, and whether there has been one. The interval between two of
-	// those is what the integration steps by -- not the interval between
-	// their arrivals here, which is the network's jitter rather than the
-	// player's movement.
-	uint32 m_last_dualscreen_motion_us = 0;
-	bool m_have_dualscreen_motion = false;
+	// Where the shell's touch was last seen, kept for the same reason
+	// update_touch keeps its own: a GamePad reports the last point touched
+	// rather than nothing once a finger lifts.
+	//
+	// The only piece of the shell's pad still read directly here. Its buttons,
+	// sticks and motion now arrive as an ordinary controller -- see
+	// DualScreenControllerProvider -- and go through the player's mapping like
+	// anything else; a touch point has no mapping to go through.
 	glm::ivec2 m_last_touch_position{};
 };
