@@ -799,27 +799,6 @@ bool VPADController::set_default_mapping(const std::shared_ptr<ControllerBase>& 
 			}
 		});
 
-#if HAS_DUALSCREEN_INPUT
-	// A controller's motion is off until switched on, which is the right
-	// default for a pad that merely happens to have a gyro in it. A companion
-	// is not that: it is the device standing in for the GamePad, and the
-	// reason it reports motion at all is that the game is meant to read it.
-	// Left off, the gyro would simply stop working for everyone who did not
-	// go looking for the checkbox.
-	//
-	// Only alongside the first-time mapping, so a player who deliberately
-	// turns it off afterwards is not overruled every time this runs.
-	if (mapping_updated && controller->api() == InputAPI::DualScreen)
-	{
-		controller->set_use_motion(true);
-		// And rumble, for the same reason and with the same caveat: the
-		// strength starts at zero for every controller, which is a reasonable
-		// default for a pad that merely can rumble and the wrong one for the
-		// device standing in for the GamePad.
-		controller->set_rumble(1.0f);
-	}
-#endif
-
 	return mapping_updated;
 }
 

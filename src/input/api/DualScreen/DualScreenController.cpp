@@ -1,6 +1,7 @@
 #include "input/api/DualScreen/DualScreenController.h"
 
 #include "DualscreenSession.h"
+#include "Cemu/Logging/CemuLogging.h"
 
 #include <algorithm>
 #include <iterator>
@@ -44,6 +45,21 @@ namespace
 DualScreenController::DualScreenController()
 	: base_type("0", "DualScreen Companion")
 {
+	// Motion and rumble on by default, the way NativeWiimoteController does it
+	// and for the same reason: these are not incidental capabilities of the
+	// device, they are most of what it is for.
+	//
+	// Setting them in set_default_mapping instead, which is where this started,
+	// did not survive a restart. InputManager::save only writes the motion
+	// setting when has_motion() says so, and has_motion() was false whenever no
+	// companion happened to be streaming -- which is exactly the situation
+	// someone is in while adding the controller in the input settings. So the
+	// value was never written, and every launch loaded the built-in default of
+	// off. A constructor default is loaded first and then overridden only by a
+	// setting the profile actually carries, which is the behaviour wanted:
+	// on unless the player turned it off.
+	m_settings.motion = true;
+	m_settings.rumble = 1.0f;
 }
 
 bool DualScreenController::is_connected()
@@ -57,8 +73,16 @@ bool DualScreenController::is_connected()
 
 bool DualScreenController::has_motion()
 {
+	// Whether this device can report motion, not whether a reading happens to
+	// be in flight this instant. Cemu asks this both to decide what to poll and
+	// to decide whether the motion setting is worth saving, and answering "not
+	// right now" to the second question is what silently dropped the setting
+	// from the profile.
+	//
+	// Still false with no shell attached at all, so a session that is not
+	// running leaves any other pad's gyro to be used instead.
 	ds::ExternalInput pad;
-	return DualscreenSession::instance().ReadInput(pad) && pad.motion.present;
+	return DualscreenSession::instance().ReadInput(pad);
 }
 
 MotionSample DualScreenController::get_motion_sample()
@@ -140,6 +164,21 @@ ControllerState DualScreenController::raw_state()
 	ds::ExternalInput pad;
 	if (!DualscreenSession::instance().ReadInput(pad))
 		return result;
+
+	// Said once, the first time this device is actually polled -- which only
+	// happens when it is mapped to an emulated controller. Whether motion is
+	// switched on for it is otherwise invisible from the outside and is the
+	// one thing that decides whether a gyro works at all, so it should not
+	// take a round of guessing to find out.
+	static bool reported = false;
+	if (!reported)
+	{
+		reported = true;
+		cemuLog_log(LogType::Force,
+		            "Dualscreen: companion mapped to the GamePad; motion is {}, rumble is {}",
+		            m_settings.motion ? "on" : "off",
+		            m_settings.rumble > 0 ? "on" : "off");
+	}
 
 	std::vector<uint32> pressed;
 	pressed.reserve(kButtonCount);
