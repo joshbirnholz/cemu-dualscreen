@@ -191,7 +191,23 @@ void VPADController::VPADRead(VPADStatus_t& status, const BtnRepeat& repeat)
 	m_last_holdvalue = status.hold;
 
 	// touch
-	if (hasDualscreenPad)
+	//
+	// The shell's finger when the shell has one, and this machine's own --
+	// its window, its mouse, its touchscreen -- when it does not.
+	//
+	// "Is a shell attached" was the wrong question to gate this on, which took
+	// a single-machine session to notice. A shell is attached in that case
+	// too, and it is not the thing being touched: its window sits behind this
+	// one, so a finger on the GamePad screen lands on Cemu and the shell never
+	// sees it. Reporting the shell's "not touching" over the top of that left
+	// the touch screen dead in exactly the configuration where this machine's
+	// own handling was the only thing that could have worked.
+	//
+	// Two devices are unaffected. A companion touching its own screen sends
+	// it, and that still wins; the moment it lifts, the fallback finds this
+	// machine's mouse button up and reports the same "not touching" the old
+	// code did.
+	if (hasDualscreenPad && dualscreenPad.touching)
 		DualscreenTouch(status, dualscreenPad, m_last_touch_position);
 	else
 		update_touch(status);

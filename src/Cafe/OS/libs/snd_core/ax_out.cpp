@@ -196,15 +196,23 @@ namespace snd_core
 				// regardless of what the shell's own audio target said,
 				// which is exactly the doubled, uncontrollable TV audio a
 				// session is supposed to replace. A screen nobody asked for
-				// is the opposite case -- Cemu's own window is showing it,
-				// so this machine's speakers are exactly where its sound
-				// belongs, same as an ordinary run with no shell at all.
-				// Same reasoning as suppressing Cemu's own controllers for a
-				// Dualscreen pad in VPADController.cpp.
+				// is the opposite case -- this machine's own window may be
+				// showing it, and then its speakers are exactly where the
+				// sound belongs, same as an ordinary run with no shell at
+				// all. Same reasoning as suppressing Cemu's own controllers
+				// for a Dualscreen pad in VPADController.cpp.
+				//
+				// "Nobody asked for it" and "this machine is showing it" are
+				// not the same thing, though, and treating them as one is
+				// what made a single device play both soundtracks at once:
+				// alone, a shell captures neither screen and shows one, so
+				// the other was heard by nobody, over the top of the one that
+				// was. See ShouldPlayLocally().
 				const bool wanted = DualscreenSession::instance().ShouldCapture(ds::ScreenId::Top);
 				if (!wanted)
 				{
-					g_tvAudio->FeedBlock(tempTVChannelData);
+					if (DualscreenSession::instance().ShouldPlayLocally(ds::ScreenId::Top))
+						g_tvAudio->FeedBlock(tempTVChannelData);
 				}
 				else if (channels == 2)
 				{
@@ -373,7 +381,11 @@ namespace snd_core
 				const bool wanted = DualscreenSession::instance().ShouldCapture(ds::ScreenId::Bottom);
 				if (!wanted)
 				{
-					g_padAudio->FeedBlock(tempDRCChannelData);
+					// And silent rather than local when nothing is showing it
+					// either -- see the TV path above, and
+					// ShouldPlayLocally().
+					if (DualscreenSession::instance().ShouldPlayLocally(ds::ScreenId::Bottom))
+						g_padAudio->FeedBlock(tempDRCChannelData);
 				}
 				else if (channels == 2)
 				{

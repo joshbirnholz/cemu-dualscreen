@@ -189,6 +189,10 @@ void DualscreenSession::Poll()
 	// its own side anyway.
 	m_requestedMaxWidthAtomic.store(m_producer.requested_max_width(), std::memory_order_relaxed);
 	m_requestedMaxHeightAtomic.store(m_producer.requested_max_height(), std::memory_order_relaxed);
+	const std::optional<ds::ScreenId> shownScreen = m_producer.shown_screen();
+	m_shownScreenAtomic.store(
+		shownScreen ? (*shownScreen == ds::ScreenId::Top ? 0 : 1) : -1,
+		std::memory_order_relaxed);
 	// Which screen this window should show, which the shell now says outright
 	// rather than leaving to be inferred.
 	//
@@ -255,6 +259,33 @@ bool DualscreenSession::ShouldCapture(ds::ScreenId screen)
 		return false;
 	const int requested = m_requestedScreenAtomic.load(std::memory_order_relaxed);
 	return requested == (screen == ds::ScreenId::Top ? 0 : 1);
+}
+
+bool DualscreenSession::ShouldPlayLocally(ds::ScreenId screen)
+{
+	// Whether a screen's sound belongs in this machine's own speakers.
+	//
+	// Three cases. A screen a shell asked for goes over the link and is never
+	// played here -- that is ShouldCapture()'s half, and this is only ever
+	// consulted for screens it said no to. A screen this machine is showing
+	// plays here, which is where the sound of a picture belongs. And a screen
+	// that is neither sent nor shown is a screen nobody is watching, so its
+	// sound is nobody's either.
+	//
+	// That third case is new because it only exists on one machine. A Wii U
+	// has two screens and a single device shows one of them, so the other was
+	// playing to an empty room -- both soundtracks at once, out of the same
+	// speakers. Two devices never reach it: between them they hold both
+	// screens, so every screen is either sent or shown.
+	//
+	// Lock-free for the same reason ShouldCapture() is, and read on the same
+	// real-time audio thread -- see its comment.
+	if (!m_runningAtomic.load(std::memory_order_relaxed))
+		return true;  // no session: this machine is the only place sound can go
+	const int shown = m_shownScreenAtomic.load(std::memory_order_relaxed);
+	if (shown < 0)
+		return true;  // a shell with no opinion; leave its sound where it was
+	return shown == (screen == ds::ScreenId::Top ? 0 : 1);
 }
 
 void DualscreenSession::CaptureSize(int sourceWidth, int sourceHeight, int& outWidth,

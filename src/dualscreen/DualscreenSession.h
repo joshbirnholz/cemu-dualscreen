@@ -78,6 +78,10 @@ public:
 	// is captured, converted, or sent for it, the same as if no session
 	// existed. See core/external_frame_link.hpp's RequestScreen.
 	bool ShouldCapture(ds::ScreenId screen);
+	// Whether a screen this machine is not sending anywhere should be heard
+	// out of its own speakers. Only meaningful for a screen ShouldCapture()
+	// said no to; see the definition.
+	bool ShouldPlayLocally(ds::ScreenId screen);
 
 	// The size a `sourceWidth` x `sourceHeight` screen is actually worth
 	// handing over at: the shell's own display size, fitted to preserve the
@@ -163,6 +167,11 @@ private:
 	// -- and what every shell built before this existed sends always.
 	std::atomic<int> m_requestedMaxWidthAtomic{0};
 	std::atomic<int> m_requestedMaxHeightAtomic{0};
+	// And which screen the shell says this machine's own window is showing,
+	// on the same terms again. -1 means the shell has no opinion, which is
+	// what one built before this existed always sends -- and which
+	// ShouldPlayLocally() reads as "carry on as before".
+	std::atomic<int> m_shownScreenAtomic{-1};
 	// Sound that arrived while m_mutex was busy, per screen, waiting to go out
 	// with the next block that gets through.
 	//
