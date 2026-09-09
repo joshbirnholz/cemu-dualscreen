@@ -864,6 +864,28 @@ void LatteRenderTarget_getScreenImageArea(sint32* x, sint32* y, sint32* width, s
 		*fullHeight = h;
 }
 
+void LatteRenderTarget_tapDualscreen(LatteTextureView* textureView, bool screenIsPad)
+{
+	// Unconditional, unlike the capture below: ShouldCapture() only knows what
+	// Poll() last read off the link, so it has to run even when nothing is
+	// currently being captured, or a shell that starts asking for a screen
+	// after a quiet spell would never be noticed asking.
+	DualscreenSession::instance().Poll();
+	// Only the screen a shell actually asked for -- see ShouldCapture(). A
+	// screen nobody asked for costs nothing here: no readback, no CPU
+	// conversion, no send.
+	if (!DualscreenSession::instance().ShouldCapture(screenIsPad ? ds::ScreenId::Bottom
+																 : ds::ScreenId::Top))
+		return;
+	// The two lines a backbuffer copy always starts with. Without them the
+	// texture HandleDualscreenFrame reads can be stale or not yet uploaded,
+	// since on the screen this machine is not showing nothing else need have
+	// touched it this frame.
+	LatteTexture_UpdateDataToLatest(textureView->baseTexture);
+	LatteTC_MarkTextureStillInUse(textureView->baseTexture);
+	g_renderer->HandleDualscreenFrame(textureView, screenIsPad);
+}
+
 void LatteRenderTarget_copyToBackbuffer(LatteTextureView* textureView, bool isPadView)
 {
 	// make sure texture is updated to latest data in cache
@@ -965,17 +987,6 @@ void LatteRenderTarget_copyToBackbuffer(LatteTextureView* textureView, bool isPa
 	cemu_assert(shader);
 	g_renderer->DrawBackbufferQuad(textureView, shader, filter==LatteTextureView::MagFilter::kLinear, imageX, imageY, imageWidth, imageHeight, isPadView, clearBackground);
 	g_renderer->HandleScreenshotRequest(textureView, isPadView);
-	// Unconditional, unlike the capture below: ShouldCapture() only knows
-	// what Poll() last read off the link, so it has to run even when nothing
-	// is currently being captured, or a shell that starts asking for a
-	// screen after a quiet spell would never be noticed asking.
-	DualscreenSession::instance().Poll();
-	// Only the screen a shell actually asked for -- see ShouldCapture(). A
-	// screen nobody asked for costs nothing here: no readback, no CPU
-	// conversion, no send.
-	if (DualscreenSession::instance().ShouldCapture(isPadView ? ds::ScreenId::Bottom
-	                                                            : ds::ScreenId::Top))
-		g_renderer->HandleDualscreenFrame(textureView, isPadView);
 	if (!g_renderer->ImguiBegin(!isPadView))
 		return;
 	swkbd_render(!isPadView);
@@ -1019,37 +1030,29 @@ void LatteRenderTarget_itHLECopyColorBufferToScanBuffer(MPTR colorBufferPtr, uin
 
 	bool showDRC = swkbd_hasKeyboardInputHook() == false && (isDRCPrimary ^ altScreenRequested);
 
-	if (renderTarget & RENDER_TARGET_DRC)
-	{
-		if (g_renderer->IsPadWindowActive())
-			LatteRenderTarget_copyToBackbuffer(texView, true); // also taps Dualscreen, from inside there
-		else
-		{
-			// Nothing here draws a backbuffer nobody is showing, but the game
-			// still rendered this and a shell may still want it -- the
-			// pad-window check above is about Cemu's own separate window,
-			// which a Dualscreen session has no reason to need. Polled here
-			// too, not just in the TV path below: relying on TV rendering to
-			// be what notices a shell newly asking for the GamePad would
-			// make that dependent on Cemu's own TV/DRC swap state, which has
-			// nothing to do with it.
-			DualscreenSession::instance().Poll();
-			// Only worth doing any of the rest, though, when a shell has
-			// actually asked for this screen (see ShouldCapture): otherwise
-			// there is nothing here to freshen a texture for.
-			if (DualscreenSession::instance().ShouldCapture(ds::ScreenId::Bottom))
-			{
-				// Standing in for the two lines copyToBackbuffer always starts
-				// with: without them the texture HandleDualscreenFrame reads
-				// can be stale or not yet uploaded, since nothing else
-				// touched it this frame to say otherwise.
-				LatteTexture_UpdateDataToLatest(texView->baseTexture);
-				LatteTC_MarkTextureStillInUse(texView->baseTexture);
-				g_renderer->HandleDualscreenFrame(texView, true);
-			}
-		}
-	}
-	if (((renderTarget & RENDER_TARGET_TV) && !showDRC) || ((renderTarget & RENDER_TARGET_DRC) && showDRC))
+	// Which of the console's two screens this texture holds. Every question
+	// below is about one of two different things -- which screen this is, and
+	// which window it goes in -- and conflating them is what put the GamePad
+	// on a shell asking for the television.
+	const bool screenIsPad = (renderTarget & RENDER_TARGET_DRC) != 0;
+
+	// A shell watching a screen is watching it whether or not this machine is
+	// also showing it, so this comes first and stands on its own. It used to
+	// ride along inside the backbuffer copies below, which was wrong in both
+	// directions at once whenever Cemu showed the GamePad in its main window
+	// -- which is exactly what DualscreenSession::Poll() arranges when a
+	// shell asks for the television. That copy is made with isPadView false,
+	// meaning "the main window", and the tap read it as "the television": the
+	// GamePad's picture went out labelled as the television's, while the
+	// television, drawn into no window at all, was never tapped and never
+	// went anywhere.
+	LatteRenderTarget_tapDualscreen(texView, screenIsPad);
+
+	// Cemu's own separate GamePad window, when the player has one open.
+	if (screenIsPad && g_renderer->IsPadWindowActive())
+		LatteRenderTarget_copyToBackbuffer(texView, true);
+	// And its main window, which shows one screen or the other.
+	if (screenIsPad == showDRC)
 		LatteRenderTarget_copyToBackbuffer(texView, false);
 }
 

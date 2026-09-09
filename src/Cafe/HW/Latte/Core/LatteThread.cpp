@@ -57,6 +57,7 @@ void LatteHandleOSScreen_prepareTextures()
 }
 
 void LatteRenderTarget_copyToBackbuffer(LatteTextureView* textureView, bool isPadView);
+void LatteRenderTarget_tapDualscreen(LatteTextureView* textureView, bool screenIsPad);
 
 bool LatteHandleOSScreen_TV()
 {
@@ -75,6 +76,7 @@ bool LatteHandleOSScreen_TV()
 	LatteTexture_ReloadData(osScreenTVTex[bufferIndexTV]->baseTexture);
 
 	// TV screen
+	LatteRenderTarget_tapDualscreen(osScreenTVTex[bufferIndexTV]->baseTexture->baseView, false);
 	LatteRenderTarget_copyToBackbuffer(osScreenTVTex[bufferIndexTV]->baseTexture->baseView, false);
 	
 	if (LatteGPUState.osScreen.screen[0].flipExecuteCount != LatteGPUState.osScreen.screen[0].flipRequestCount)
@@ -97,6 +99,7 @@ bool LatteHandleOSScreen_DRC()
 	LatteTexture_ReloadData(osScreenDRCTex[bufferIndexDRC]->baseTexture);
 
 	// GamePad screen
+	LatteRenderTarget_tapDualscreen(osScreenDRCTex[bufferIndexDRC]->baseTexture->baseView, true);
 	LatteRenderTarget_copyToBackbuffer(osScreenDRCTex[bufferIndexDRC]->baseTexture->baseView, true);
 
 	if (LatteGPUState.osScreen.screen[1].flipExecuteCount != LatteGPUState.osScreen.screen[1].flipRequestCount)

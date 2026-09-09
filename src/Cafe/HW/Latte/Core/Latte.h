@@ -103,6 +103,11 @@ void LatteRenderTarget_trackUpdates();
 
 void LatteRenderTarget_getScreenImageArea(sint32* x, sint32* y, sint32* width, sint32* height, sint32* fullWidth, sint32* fullHeight, bool padView = false);
 void LatteRenderTarget_copyToBackbuffer(LatteTextureView* textureView, bool isPadView);
+// Hands one of the console's two screens to a Dualscreen session, if one is
+// running and is watching that screen. `screenIsPad` says which screen the
+// texture holds, which is a different question from which window it is drawn
+// into -- see the note where this is called.
+void LatteRenderTarget_tapDualscreen(LatteTextureView* textureView, bool screenIsPad);
 
 void LatteRenderTarget_GetCurrentVirtualViewportSize(sint32* viewportWidth, sint32* viewportHeight);
 
