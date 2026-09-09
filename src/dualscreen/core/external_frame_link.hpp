@@ -327,7 +327,19 @@ public:
     // then scale down on a CPU. Both zero means "whatever size you have",
     // which is what a consumer that does not know the far end's display size
     // yet asks for. See fit_within() for the arithmetic both ends agree on.
-    void request_screen(std::optional<ScreenId> screen, int max_width = 0, int max_height = 0);
+    //
+    // `shown` is the other half of the same conversation, and a separate
+    // question: which screen the producer should put in its own window. A
+    // producer used to have to guess it -- the one not being captured -- and
+    // that guess has no answer at all when nothing is being captured, which
+    // is a device playing on its own. That case is the whole reason this is
+    // said outright: a handheld with nobody else connected is a GamePad and
+    // wants Cemu showing the GamePad, and a desktop is a television and wants
+    // the television, and only this end knows which it is being. Absent
+    // leaves the producer's own display choice alone, which is what a
+    // consumer that has no opinion sends.
+    void request_screen(std::optional<ScreenId> screen, int max_width = 0, int max_height = 0,
+                        std::optional<ScreenId> shown = std::nullopt);
 
     // The GamePad motor's state as of the last thing the producer sent, and
     // whether anything new has arrived since the last call -- a one-shot,
@@ -379,6 +391,10 @@ private:
     std::optional<ScreenId> sent_screen_;
     int sent_max_width_ = -1;
     int sent_max_height_ = -1;
+    // Deliberately not an optional: "not sent yet" has to be distinguishable
+    // from "sent, meaning no opinion", or the first request never goes out.
+    bool have_sent_shown_ = false;
+    std::optional<ScreenId> sent_shown_;
     bool rumble_active_ = false;
     bool have_new_rumble_ = false;
 };
@@ -442,6 +458,13 @@ public:
     int requested_max_width() const { return requested_max_width_; }
     int requested_max_height() const { return requested_max_height_; }
 
+    // Which screen the consumer would like this producer to show in its own
+    // window, as of the last poll(). Absent means it has no opinion -- either
+    // it is an older consumer that never had one, or it explicitly said so --
+    // and the producer should leave its own display choice alone. See
+    // request_screen(), whose `shown` this is.
+    std::optional<ScreenId> shown_screen() const { return shown_screen_; }
+
 private:
     ExternalSharedHeader* header() { return static_cast<ExternalSharedHeader*>(memory_); }
 
@@ -455,6 +478,7 @@ private:
     std::optional<ScreenId> requested_screen_;
     int requested_max_width_ = 0;
     int requested_max_height_ = 0;
+    std::optional<ScreenId> shown_screen_;
     bool sent_rumble_ = false;
     bool have_sent_rumble_ = false;
 };

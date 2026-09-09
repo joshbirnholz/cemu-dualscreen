@@ -189,13 +189,29 @@ void DualscreenSession::Poll()
 	// its own side anyway.
 	m_requestedMaxWidthAtomic.store(m_producer.requested_max_width(), std::memory_order_relaxed);
 	m_requestedMaxHeightAtomic.store(m_producer.requested_max_height(), std::memory_order_relaxed);
-	// The only reason this end's own window should ever show anything but
-	// its usual default: the shell is watching the television, so something
-	// local has to show the other one instead. Nothing requested is left
-	// alone entirely -- whatever the player's own Alt+Tab/VPAD toggle or
-	// their own display setting already has it at, exactly as if no session
-	// existed at all.
-	if (m_requestedScreen == ds::ScreenId::Top)
+	// Which screen this window should show, which the shell now says outright
+	// rather than leaving to be inferred.
+	//
+	// It used to be inferred, as "whichever screen the shell did not ask to
+	// capture", and that is right whenever it has asked for one. It has no
+	// answer at all when it has asked for nothing, which is not an idle case:
+	// it is a shell playing on a single machine, with no second device
+	// anywhere. A handheld in that state is being held as a GamePad and wants
+	// this window showing the GamePad; a desktop is a television and wants the
+	// television. Only the shell knows which it is being, so it says.
+	//
+	// An older shell says nothing here and the inference stands, unchanged.
+	//
+	// Either way this runs every frame, so while a session is up the shell's
+	// answer is the one that holds: the player's own Ctrl+Tab toggle sets the
+	// same flag and is overwritten on the next poll. Holding Tab to peek at
+	// the other screen still works, because that is a separate flag XORed with
+	// this one. Both were already true before this said anything explicitly.
+	if (const std::optional<ds::ScreenId> shown = m_producer.shown_screen())
+	{
+		LatteGPUState.isDRCPrimary = (*shown == ds::ScreenId::Bottom);
+	}
+	else if (m_requestedScreen == ds::ScreenId::Top)
 	{
 		LatteGPUState.isDRCPrimary = true;
 	}
