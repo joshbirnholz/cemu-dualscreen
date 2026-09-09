@@ -43,7 +43,16 @@ namespace
 } // namespace
 
 DualScreenController::DualScreenController()
-	: base_type("0", "DualScreen Companion")
+	// "GamePad" rather than "Companion", which was only ever true of half the
+	// ways this gets used: the shell hands over one pad, and where that pad
+	// comes from is its business, not this end's. On two devices it is the
+	// companion's; on one it is whatever is plugged into or built into the
+	// machine running the shell. What it always is, is the GamePad.
+	//
+	// A display name only, and safe to change: profiles are keyed by the API
+	// and the uuid below, and ControllerFactory ignores the name a saved
+	// profile carries for this API entirely.
+	: base_type("0", "DualScreen GamePad")
 {
 	// Motion and rumble on by default, the way NativeWiimoteController does it
 	// and for the same reason: these are not incidental capabilities of the
