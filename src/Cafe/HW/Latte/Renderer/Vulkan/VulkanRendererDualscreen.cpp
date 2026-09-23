@@ -533,6 +533,23 @@ void VulkanRenderer::HandleDualscreenFrame(LatteTextureView* texView, bool padVi
 		m_dualscreenHasBuffers = true;
 	}
 
+	// Out of whatever render pass the game has open, before anything below is
+	// recorded. vkCmdCopyImageToBuffer and vkCmdBlitImage are not allowed
+	// inside one, and neither is a layout transition on an image that may be
+	// one of its attachments -- which the screen being handed over often is,
+	// since a game can render straight into its scan buffer. Every copy Cemu
+	// records itself starts with this line (texture_copyImageSubData,
+	// DrawBackbufferQuad); this one did not, because it runs *before* the
+	// backbuffer copy that would have ended the pass, and on the screen this
+	// machine is not showing there is no backbuffer copy at all.
+	//
+	// Nothing checks for this. RADV records the commands anyway into a
+	// command buffer that is now in no valid state, and falls over later on
+	// some unrelated command: Nintendo Land's Luigi's Mansion and Takamaru's
+	// Ninja Castle crashed inside the game's own next surface copy, while
+	// attractions that happened to have no pass open at this point ran fine.
+	draw_endRenderPass();
+
 	auto textureVk = baseImageTex->GetImageObj();
 	textureVk->flagForCurrentCommandBuffer();
 
