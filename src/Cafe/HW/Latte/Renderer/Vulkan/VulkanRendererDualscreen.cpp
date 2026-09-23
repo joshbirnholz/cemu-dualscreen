@@ -543,11 +543,16 @@ void VulkanRenderer::HandleDualscreenFrame(LatteTextureView* texView, bool padVi
 	// backbuffer copy that would have ended the pass, and on the screen this
 	// machine is not showing there is no backbuffer copy at all.
 	//
-	// Nothing checks for this. RADV records the commands anyway into a
-	// command buffer that is now in no valid state, and falls over later on
-	// some unrelated command: Nintendo Land's Luigi's Mansion and Takamaru's
-	// Ninja Castle crashed inside the game's own next surface copy, while
-	// attractions that happened to have no pass open at this point ran fine.
+	// Nothing checks for this: a driver records the commands anyway, into a
+	// command buffer that is then in no valid state, and what goes wrong
+	// after that is anybody's guess.
+	//
+	// (This was first put in as the fix for Nintendo Land crashing on
+	// starting Luigi's Mansion and Takamaru's Ninja Castle. It was not: the
+	// same crash happened with no shell attached at all, which rules this
+	// code out. That one was upstream's -- see the texture copy fixes picked
+	// from upstream alongside it. This stays because the rule above holds
+	// regardless.)
 	draw_endRenderPass();
 
 	auto textureVk = baseImageTex->GetImageObj();
