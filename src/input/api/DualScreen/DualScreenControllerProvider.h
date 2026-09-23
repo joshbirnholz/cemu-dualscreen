@@ -24,8 +24,16 @@
 // absolute point on a screen is not something a button mapping has any way to
 // describe.
 //
-// One controller, always offered even with no shell attached, so a player can
-// set the mapping up before starting a session rather than only during one.
+// The GamePad and eight players, always offered even with no shell attached,
+// so a player can set the mapping up before starting a session rather than
+// only during one.
+//
+// The players are the game's other controllers -- Pro Controllers, Wii
+// Remotes, Classic Controllers, whichever each is mapped to here. Which pad
+// on which device feeds which player is the shell's to decide, since it is
+// the one that can see every controller on every device: here they are only
+// ever Player 1 to Player 8, which is what keeps a mapping made once working
+// whatever order Steam happens to list the pads in tonight.
 class DualScreenControllerProvider : public ControllerProviderBase
 {
 	friend class DualScreenController;

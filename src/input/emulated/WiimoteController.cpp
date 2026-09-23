@@ -1,6 +1,7 @@
 #include "input/emulated/WiimoteController.h"
 
 #include "input/api/Controller.h"
+#include "input/api/DualScreen/DualScreenControllerProvider.h"
 #include "input/api/Wiimote/NativeWiimoteController.h"
 
 WiimoteController::WiimoteController(size_t player_index)
@@ -56,7 +57,43 @@ bool WiimoteController::set_default_mapping(const std::shared_ptr<ControllerBase
 			{kButtonId_Nunchuck_Left, kAxisXN},
 			{kButtonId_Nunchuck_Right, kAxisXP},
 		};
+		break;
 	}
+#if HAS_DUALSCREEN_INPUT
+	case InputAPI::DualScreen:
+	{
+		// A player's pad, in ds::ExternalButton order (a Wii U GamePad's
+		// buttons), laid onto a Wii Remote held upright with a Nunchuk: A and
+		// B where a pad has them, 1 and 2 on the other two face buttons, the
+		// Nunchuk's Z and C on the left shoulder and trigger, and its stick on
+		// the left stick. Home has nowhere to come from -- the link carries no
+		// Home button -- so it is left for the player to map.
+		mapping =
+		{
+			{kButtonId_A, kButton0},
+			{kButtonId_B, kButton1},
+			{kButtonId_1, kButton3},
+			{kButtonId_2, kButton2},
+
+			{kButtonId_Plus, kButton8},
+			{kButtonId_Minus, kButton9},
+
+			{kButtonId_Up, kButton10},
+			{kButtonId_Down, kButton11},
+			{kButtonId_Left, kButton12},
+			{kButtonId_Right, kButton13},
+
+			{kButtonId_Nunchuck_Z, kButton6},
+			{kButtonId_Nunchuck_C, kButton4},
+
+			{kButtonId_Nunchuck_Up, kAxisYP},
+			{kButtonId_Nunchuck_Down, kAxisYN},
+			{kButtonId_Nunchuck_Left, kAxisXN},
+			{kButtonId_Nunchuck_Right, kAxisXP},
+		};
+		break;
+	}
+#endif
 	}
 
 	bool mapping_updated = false;

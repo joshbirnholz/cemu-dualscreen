@@ -52,20 +52,30 @@ so the same thing can be done by hand. With no flag Cemu behaves exactly as it
 always has, and with a flag nothing is listening on, it says so once in the log
 and plays the game normally.
 
-While a shell is connected it owns the GamePad: the buttons, both sticks and the
-touch screen all come from the link, and Cemu's own controllers are ignored for
-player one. One is created if this Cemu has never had its input configured,
-since the shell needs a GamePad to be holding. Everything reverts the moment the
-shell goes away.
+### Controllers
 
-Motion is the one exception -- it stays Cemu's own. The link carries no gyro or
-accelerometer data at all, so whatever motion controller is configured in
-Cemu's own Input settings for player one keeps working exactly as it would
-without a shell attached. That includes a DSU client controller (Cemu already
-supports connecting to one over the network): point it at `127.0.0.1` if the
-DSU server is running on this same machine -- `SteamDeckGyroDSU` on a Deck that
-is hosting, for instance -- or at another device's address if that is where the
-server is, such as a Deck acting as the companion.
+The shell's controllers reach Cemu as ordinary controllers, under the
+**DualScreen** API in Cemu's input settings, and are mapped there like any
+other pad:
+
+- **DualScreen GamePad** is the Wii U GamePad: buttons, both sticks, motion and
+  rumble, from whichever device the shell says is holding the GamePad. The
+  touch screen comes from the link directly, since a button mapping has no way
+  to describe a point on a screen. A GamePad is created if this Cemu has never
+  had its input configured, since the shell needs one to be holding.
+- **DualScreen Player 1** to **Player 8** are the game's other controllers.
+  Map each to a Pro Controller, Wii Remote or Classic Controller as the game
+  wants; each has a default mapping that passes the buttons straight through.
+  The GamePad is not one of them, just as it is not on a Wii U.
+
+Which physical pad feeds which of these is decided by the shell, which can see
+every controller on every device, not by Cemu. So a mapping made once keeps
+working whatever order Steam lists the pads in. A player nothing is feeding
+shows as a controller that is not plugged in. Rumble goes back over the link,
+and the shell sends it to whichever pads it assigned to that player.
+
+The shell's pads come through Steam Input on a Steam Deck. Cemu should not
+also map the same pads through SDL, or every press would arrive twice.
 
 Vulkan only. On OpenGL the frames are simply not handed over -- see
 `Renderer::HandleDualscreenFrame`.

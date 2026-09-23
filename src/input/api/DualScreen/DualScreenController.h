@@ -3,9 +3,11 @@
 #include "input/api/Controller.h"
 #include "input/api/DualScreen/DualScreenControllerProvider.h"
 #include "input/motion/MotionHandler.h"
+#include "core/external_frame_link.hpp"
 
-// The one controller the DualScreen provider offers -- see that header for
-// why this is a controller at all rather than the override it used to be.
+// A controller the DualScreen provider offers: the GamePad, or one of the
+// game's other players -- see that header for why these are controllers at all
+// rather than the override the GamePad used to be.
 //
 // Its raw buttons are the sixteen a Wii U GamePad has, in the order the link
 // carries them (ds::ExternalButton), so kButton0 is A and kButton15 is the
@@ -16,7 +18,17 @@
 class DualScreenController : public Controller<DualScreenControllerProvider>
 {
 public:
-	DualScreenController();
+	// `player` is -1 for the GamePad and 0 to ds::kExternalPlayers - 1 for
+	// Player 1 upward. The uuid is "0" for the GamePad, which is what every
+	// profile saved before there were players already says, and the player's
+	// own number from 1 upward for the rest.
+	explicit DualScreenController(int player = -1);
+
+	// The uuid a controller with this `player` is saved under, and the player
+	// a saved uuid means -- anything that is not a player's number is the
+	// GamePad, which is what an old profile's "0" has always meant.
+	static std::string uuid_for(int player);
+	static int player_for(std::string_view uuid);
 
 	std::string_view api_name() const override
 	{
@@ -55,4 +67,10 @@ private:
 	WiiUMotionHandler m_motion;
 	uint32 m_last_motion_us = 0;
 	bool m_have_motion = false;
+
+	// Which controller this is: -1 for the GamePad, else the player.
+	int m_player = -1;
+	bool m_reported = false;
+	// This controller's pad, from whichever half of the link carries it.
+	bool read_pad(ds::ExternalInput& out) const;
 };

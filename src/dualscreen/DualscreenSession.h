@@ -136,6 +136,15 @@ public:
 	// one call so that a Poll() on another thread cannot land between them.
 	bool ReadInput(ds::ExternalInput& out);
 
+	// The same for one of the game's other players, 0 for Player 1 -- see
+	// ds::kExternalPlayers. False when no shell is attached, or when the shell
+	// says nothing is feeding that player: a controller that is not plugged in.
+	bool ReadPlayerInput(int player, ds::ExternalInput& out);
+
+	// That player's motor, on the same terms as SendRumble() above -- the
+	// shell decides which pad, on which device, actually buzzes.
+	void SendPlayerRumble(int player, bool active);
+
 	// The size of the GamePad screen this session hands over, which is the
 	// size the shell reports touches in.
 	int PadWidth();

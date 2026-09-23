@@ -1,6 +1,7 @@
 #include "input/emulated/ClassicController.h"
 
 #include "input/api/Controller.h"
+#include "input/api/DualScreen/DualScreenControllerProvider.h"
 #ifdef HAS_SDL
 #include "input/api/SDL/SDLController.h"
 #endif
@@ -208,6 +209,46 @@ bool ClassicController::set_default_mapping(const std::shared_ptr<ControllerBase
 				{kButtonId_StickR_Right, kRotationXP},
 			};
 		}
+	}
+#endif
+#if HAS_DUALSCREEN_INPUT
+	case InputAPI::DualScreen:
+	{
+		// A player's pad arrives in ds::ExternalButton order -- a Wii U
+		// GamePad's buttons -- which is a Classic Controller's too, less the stick clicks it does not have, so every
+		// button goes straight across: kButton0 is A and the rest follow.
+		// The sticks arrive y-up; see DualScreenController::raw_state.
+		mapping =
+		{
+			{kButtonId_A, kButton0},
+			{kButtonId_B, kButton1},
+			{kButtonId_X, kButton2},
+			{kButtonId_Y, kButton3},
+
+			{kButtonId_L, kButton4},
+			{kButtonId_R, kButton5},
+			{kButtonId_ZL, kButton6},
+			{kButtonId_ZR, kButton7},
+
+			{kButtonId_Plus, kButton8},
+			{kButtonId_Minus, kButton9},
+
+			{kButtonId_Up, kButton10},
+			{kButtonId_Down, kButton11},
+			{kButtonId_Left, kButton12},
+			{kButtonId_Right, kButton13},
+
+			{kButtonId_StickL_Up, kAxisYP},
+			{kButtonId_StickL_Down, kAxisYN},
+			{kButtonId_StickL_Left, kAxisXN},
+			{kButtonId_StickL_Right, kAxisXP},
+
+			{kButtonId_StickR_Up, kRotationYP},
+			{kButtonId_StickR_Down, kRotationYN},
+			{kButtonId_StickR_Left, kRotationXN},
+			{kButtonId_StickR_Right, kRotationXP},
+		};
+		break;
 	}
 #endif
 	case InputAPI::XInput:

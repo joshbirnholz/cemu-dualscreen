@@ -89,8 +89,9 @@ ControllerPtr ControllerFactory::CreateController(InputAPI::Type api, std::strin
 #endif
 #if HAS_DUALSCREEN_INPUT
 	case InputAPI::DualScreen:
-		// Only ever one, so the uuid carries nothing to distinguish.
-		return std::make_shared<DualScreenController>();
+		// "0" is the GamePad -- every profile saved before there were players
+		// says so -- and "1" upward are the players.
+		return std::make_shared<DualScreenController>(DualScreenController::player_for(uuid));
 #endif
 #if defined(HAS_GAMECUBE) && HAS_GAMECUBE && defined(HAS_LIBUSB)
 	case InputAPI::GameCube:

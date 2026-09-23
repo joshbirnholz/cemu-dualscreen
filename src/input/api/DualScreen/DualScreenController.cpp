@@ -42,17 +42,39 @@ namespace
 	}
 } // namespace
 
-DualScreenController::DualScreenController()
-	// "GamePad" rather than "Companion", which was only ever true of half the
-	// ways this gets used: the shell hands over one pad, and where that pad
-	// comes from is its business, not this end's. On two devices it is the
-	// companion's; on one it is whatever is plugged into or built into the
-	// machine running the shell. What it always is, is the GamePad.
-	//
-	// A display name only, and safe to change: profiles are keyed by the API
-	// and the uuid below, and ControllerFactory ignores the name a saved
-	// profile carries for this API entirely.
-	: base_type("0", "DualScreen GamePad")
+namespace
+{
+	std::string display_name_for(int player)
+	{
+		// "GamePad" rather than "Companion", which was only ever true of half
+		// the ways this gets used: the shell hands over one pad, and where that
+		// pad comes from is its business, not this end's. What it always is, is
+		// the GamePad. The players are numbered from 1 because the GamePad is
+		// not one of them -- it is its own controller, the way it is on a Wii U.
+		//
+		// A display name only, and safe to change: profiles are keyed by the
+		// API and the uuid, and ControllerFactory ignores the name a saved
+		// profile carries for this API entirely.
+		if (player < 0)
+			return "DualScreen GamePad";
+		return fmt::format("DualScreen Player {}", player + 1);
+	}
+} // namespace
+
+std::string DualScreenController::uuid_for(int player)
+{
+	return player < 0 ? std::string("0") : std::to_string(player + 1);
+}
+
+int DualScreenController::player_for(std::string_view uuid)
+{
+	if (uuid.size() == 1 && uuid[0] >= '1' && uuid[0] < '1' + ds::kExternalPlayers)
+		return uuid[0] - '1';
+	return -1;
+}
+
+DualScreenController::DualScreenController(int player)
+	: base_type(uuid_for(player), display_name_for(player)), m_player(player)
 {
 	// Motion and rumble on by default, the way NativeWiimoteController does it
 	// and for the same reason: these are not incidental capabilities of the
@@ -71,13 +93,21 @@ DualScreenController::DualScreenController()
 	m_settings.rumble = 1.0f;
 }
 
+bool DualScreenController::read_pad(ds::ExternalInput& out) const
+{
+	if (m_player < 0)
+		return DualscreenSession::instance().ReadInput(out);
+	return DualscreenSession::instance().ReadPlayerInput(m_player, out);
+}
+
 bool DualScreenController::is_connected()
 {
-	// Connected means a shell is attached and has sent at least one pad, not
+	// Connected means a shell is attached and is feeding this controller, not
 	// merely that this build can speak the protocol -- otherwise the input
-	// settings would show it as live on a machine with no shell running.
+	// settings would show it as live on a machine with no shell running, and
+	// every player as plugged in whether anyone was holding it or not.
 	ds::ExternalInput pad;
-	return DualscreenSession::instance().ReadInput(pad);
+	return read_pad(pad);
 }
 
 bool DualScreenController::has_motion()
@@ -91,13 +121,13 @@ bool DualScreenController::has_motion()
 	// Still false with no shell attached at all, so a session that is not
 	// running leaves any other pad's gyro to be used instead.
 	ds::ExternalInput pad;
-	return DualscreenSession::instance().ReadInput(pad);
+	return read_pad(pad);
 }
 
 MotionSample DualScreenController::get_motion_sample()
 {
 	ds::ExternalInput pad;
-	if (!DualscreenSession::instance().ReadInput(pad) || !pad.motion.present)
+	if (!read_pad(pad) || !pad.motion.present)
 	{
 		// Whatever it last said stops being true once it stops saying it, so
 		// the next sample after a gap starts a fresh interval rather than
@@ -148,7 +178,10 @@ void DualScreenController::start_rumble()
 	// dragging the slider to zero turns a companion's rumble off.
 	if (m_settings.rumble <= 0)
 		return;
-	DualscreenSession::instance().SendRumble(true);
+	if (m_player < 0)
+		DualscreenSession::instance().SendRumble(true);
+	else
+		DualscreenSession::instance().SendPlayerRumble(m_player, true);
 }
 
 void DualScreenController::stop_rumble()
@@ -156,7 +189,10 @@ void DualScreenController::stop_rumble()
 	// Not gated, deliberately -- the same as SDLController. Turning the
 	// strength down mid-rumble must still stop the one already running rather
 	// than leave it on forever.
-	DualscreenSession::instance().SendRumble(false);
+	if (m_player < 0)
+		DualscreenSession::instance().SendRumble(false);
+	else
+		DualscreenSession::instance().SendPlayerRumble(m_player, false);
 }
 
 std::string DualScreenController::get_button_name(uint64 button) const
@@ -171,21 +207,19 @@ ControllerState DualScreenController::raw_state()
 	ControllerState result{};
 
 	ds::ExternalInput pad;
-	if (!DualscreenSession::instance().ReadInput(pad))
+	if (!read_pad(pad))
 		return result;
 
-	// Said once, the first time this device is actually polled -- which only
-	// happens when it is mapped to an emulated controller. Whether motion is
-	// switched on for it is otherwise invisible from the outside and is the
+	// Said once per controller, the first time it is actually polled -- which
+	// only happens when it is mapped to an emulated controller. Whether motion
+	// is switched on for it is otherwise invisible from the outside and is the
 	// one thing that decides whether a gyro works at all, so it should not
 	// take a round of guessing to find out.
-	static bool reported = false;
-	if (!reported)
+	if (!m_reported)
 	{
-		reported = true;
-		cemuLog_log(LogType::Force,
-		            "Dualscreen: companion mapped to the GamePad; motion is {}, rumble is {}",
-		            m_settings.motion ? "on" : "off",
+		m_reported = true;
+		cemuLog_log(LogType::Force, "Dualscreen: {} is mapped and being fed; motion is {}, rumble is {}",
+		            display_name_for(m_player), m_settings.motion ? "on" : "off",
 		            m_settings.rumble > 0 ? "on" : "off");
 	}
 

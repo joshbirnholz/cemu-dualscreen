@@ -429,6 +429,37 @@ void DualscreenSession::SendRumble(bool active)
 	m_producer.send_rumble(active);
 }
 
+bool DualscreenSession::ReadPlayerInput(int player, ds::ExternalInput& out)
+{
+	std::scoped_lock lock(m_mutex);
+	if (!m_running || !m_producer.player_connected(player))
+		return false;
+	out = m_producer.player_input(player);
+	return true;
+}
+
+void DualscreenSession::SendPlayerRumble(int player, bool active)
+{
+	// The same locking as SendRumble(), for the same reasons: a start that
+	// cannot get the lock is tried again on the next call anyway, and a stop
+	// is sent once and must not be lost.
+	std::unique_lock lock(m_mutex, std::defer_lock);
+	if (active)
+	{
+		lock.try_lock();
+		if (!lock.owns_lock())
+			return;
+	}
+	else
+	{
+		lock.lock();
+	}
+	if (!m_running)
+		return;
+
+	m_producer.send_player_rumble(player, active);
+}
+
 bool DualscreenSession::ReadInput(ds::ExternalInput& out)
 {
 	std::scoped_lock lock(m_mutex);

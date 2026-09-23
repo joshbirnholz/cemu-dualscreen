@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "layout/screen_id.hpp"
@@ -91,7 +92,23 @@ enum class ExternalControl : uint8_t {
     // edges, which is all a companion device standing in for the GamePad's
     // one motor can act on anyway.
     Rumble = 8,
+    // consumer -> producer, one of the game's other players' pads: a player
+    // number (0 for Player 1) and whether anything is feeding it, then the
+    // same bytes Input carries. Latest-state like Input, and for the same
+    // reason. See ExternalPlayers.
+    PlayerInput = 9,
+    // producer -> consumer, "Player N's motor is on/off", on the edges like
+    // Rumble.
+    PlayerRumble = 10,
 };
+
+// How many players the link carries besides the GamePad, which is not one of
+// them: a Wii U's GamePad is its own controller, and its other controllers --
+// Pro Controllers, Wii Remotes -- are the players. Eight because that is how
+// many controllers Cemu can map at once; which physical pad feeds which player
+// is decided on the consumer's side, where every controller on every device
+// can be seen, and the producer only ever sees Player 1 to Player 8.
+inline constexpr int kExternalPlayers = 8;
 
 // A GamePad, in its own terms rather than this app's. What crosses this link is
 // a Wii U's controls; an emulator on the far end has no interest in how this
@@ -351,6 +368,18 @@ public:
     // undo that. False until a producer has said anything at all.
     bool take_rumble(bool& out_active);
 
+    // One player's pad, the same way send_input() sends the GamePad's -- only
+    // what changed, never blocking. `connected` false means nothing is
+    // feeding this player any more, which a producer should show as the
+    // controller being unplugged rather than as one with nothing pressed.
+    // `player` outside [0, kExternalPlayers) is ignored.
+    void send_player_input(int player, bool connected, const ExternalInput& input);
+
+    // The next change to a player's motor, oldest first. One-shot edges like
+    // take_rumble(), but queued rather than latest-only: two players can
+    // change in the same poll, and neither edge may be lost.
+    bool take_player_rumble(int& out_player, bool& out_active);
+
     // Where a producer connects when nobody said otherwise. Under the user's
     // runtime directory rather than /tmp, so two people on one machine do not
     // collide and nothing survives a reboot.
@@ -397,6 +426,12 @@ private:
     std::optional<ScreenId> sent_shown_;
     bool rumble_active_ = false;
     bool have_new_rumble_ = false;
+    // What send_player_input() last got onto the wire, per player -- the same
+    // "only what changed" bookkeeping as sent_input_.
+    ExternalInput sent_player_input_[kExternalPlayers];
+    bool sent_player_connected_[kExternalPlayers] = {};
+    bool have_sent_player_[kExternalPlayers] = {};
+    std::vector<std::pair<int, bool>> player_rumble_;
 };
 
 // The producer: whatever is actually playing the game. Here so that the fork of
@@ -432,6 +467,8 @@ public:
     // fork is driven by the game and must never be able to stall it waiting
     // on a slow consumer.
     void send_rumble(bool active);
+    // The same, for one of the players -- see kExternalPlayers.
+    void send_player_rumble(int player, bool active);
 
     // Whether the consumer has asked for a reset since the last call, and
     // whether it has gone away.
@@ -443,6 +480,18 @@ public:
     // is still a pad.
     bool have_input() const { return have_input_; }
     const ExternalInput& input() const { return input_; }
+
+    // One player's pad as of the last poll(), and whether anything is feeding
+    // that player at all. False for a player the consumer has never mentioned,
+    // and for one it has since said nothing feeds -- both of which a producer
+    // should present as a controller that is not plugged in.
+    bool player_connected(int player) const {
+        return player >= 0 && player < kExternalPlayers && player_connected_[player];
+    }
+    const ExternalInput& player_input(int player) const {
+        static const ExternalInput kNothing;
+        return (player >= 0 && player < kExternalPlayers) ? player_input_[player] : kNothing;
+    }
 
     // Which single screen the consumer has most recently asked for, if any --
     // updated as of the last poll(). Absent means either nothing has been
@@ -481,6 +530,10 @@ private:
     std::optional<ScreenId> shown_screen_;
     bool sent_rumble_ = false;
     bool have_sent_rumble_ = false;
+    ExternalInput player_input_[kExternalPlayers];
+    bool player_connected_[kExternalPlayers] = {};
+    bool sent_player_rumble_[kExternalPlayers] = {};
+    bool have_sent_player_rumble_[kExternalPlayers] = {};
 };
 
 }  // namespace ds

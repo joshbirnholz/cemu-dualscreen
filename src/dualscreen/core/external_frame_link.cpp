@@ -442,6 +442,13 @@ void ExternalFrameLink::close() {
     sent_max_height_ = -1;
     rumble_active_ = false;
     have_new_rumble_ = false;
+    // Every player, for the same reason as the GamePad's pad above.
+    for (int player = 0; player < kExternalPlayers; ++player) {
+        sent_player_input_[player] = ExternalInput();
+        sent_player_connected_[player] = false;
+        have_sent_player_[player] = false;
+    }
+    player_rumble_.clear();
 }
 
 bool ExternalFrameLink::accept_peer(std::string* error) {
@@ -582,11 +589,25 @@ bool ExternalFrameLink::handle_message(ExternalControl kind, const std::vector<u
             have_new_rumble_ = true;
             return true;
         }
+        case ExternalControl::PlayerRumble: {
+            if (body.size() < 2 || body[0] >= kExternalPlayers) {
+                return true;
+            }
+            player_rumble_.emplace_back(static_cast<int>(body[0]), body[1] != 0u);
+            // Bounded, like audio: a caller that never takes these must not
+            // make them grow for ever. The newest are the ones that matter.
+            if (player_rumble_.size() > 64) {
+                player_rumble_.erase(player_rumble_.begin(),
+                                     player_rumble_.end() - 64);
+            }
+            return true;
+        }
         case ExternalControl::Shutdown:
             if (error != nullptr) *error = "the game closed";
             return false;
         case ExternalControl::Reset:
         case ExternalControl::Input:
+        case ExternalControl::PlayerInput:
         case ExternalControl::RequestScreen:
             // Ours to send, not to receive.
             return true;
@@ -651,6 +672,16 @@ bool ExternalFrameLink::take_rumble(bool& out_active) {
     return true;
 }
 
+bool ExternalFrameLink::take_player_rumble(int& out_player, bool& out_active) {
+    if (player_rumble_.empty()) {
+        return false;
+    }
+    out_player = player_rumble_.front().first;
+    out_active = player_rumble_.front().second;
+    player_rumble_.erase(player_rumble_.begin());
+    return true;
+}
+
 bool ExternalFrameLink::send_control(ExternalControl kind, const std::vector<uint8_t>& body) {
     if (peer_fd_ < 0) {
         return false;
@@ -702,6 +733,32 @@ void ExternalFrameLink::send_input(const ExternalInput& input) {
     if (sent) {
         sent_input_ = input;
         have_sent_input_ = true;
+    }
+}
+
+void ExternalFrameLink::send_player_input(int player, bool connected, const ExternalInput& input) {
+    if (player < 0 || player >= kExternalPlayers) {
+        return;
+    }
+    // A player nothing feeds has no pad worth describing; what matters is
+    // only that it is gone, so its state is compared as empty.
+    const ExternalInput& state = connected ? input : ExternalInput();
+    if (have_sent_player_[player] && sent_player_connected_[player] == connected &&
+        sent_player_input_[player] == state) {
+        return;
+    }
+    std::vector<uint8_t> body;
+    body.reserve(2 + kInputBytes);
+    body.push_back(static_cast<uint8_t>(player));
+    body.push_back(connected ? 1u : 0u);
+    put_input(body, state);
+    bool sent = false;
+    send_control_best_effort(ExternalControl::PlayerInput, body, sent);
+    // Recorded only once it is really on the wire -- see send_input().
+    if (sent) {
+        sent_player_input_[player] = state;
+        sent_player_connected_[player] = connected;
+        have_sent_player_[player] = true;
     }
 }
 
@@ -843,6 +900,13 @@ void ExternalFrameProducer::close() {
     // remembered it from before.
     sent_rumble_ = false;
     have_sent_rumble_ = false;
+    // And every player, on both counts.
+    for (int player = 0; player < kExternalPlayers; ++player) {
+        player_input_[player] = ExternalInput();
+        player_connected_[player] = false;
+        sent_player_rumble_[player] = false;
+        have_sent_player_rumble_[player] = false;
+    }
 }
 
 bool ExternalFrameProducer::publish(ScreenId screen, uint64_t serial, const uint32_t* pixels,
@@ -945,6 +1009,29 @@ void ExternalFrameProducer::send_rumble(bool active) {
     have_sent_rumble_ = true;
 }
 
+void ExternalFrameProducer::send_player_rumble(int player, bool active) {
+    if (fd_ < 0 || player < 0 || player >= kExternalPlayers) {
+        return;
+    }
+    if (have_sent_player_rumble_[player] && active == sent_player_rumble_[player]) {
+        return;
+    }
+    std::vector<uint8_t> body;
+    body.push_back(static_cast<uint8_t>(player));
+    body.push_back(active ? 1u : 0u);
+    std::vector<uint8_t> message;
+    frame_message(ExternalControl::PlayerRumble, body, message);
+    // Recorded only once it is on the wire, for the reason send_rumble()
+    // gives: a dropped edge recorded as sent would never be sent again.
+    bool sent = false;
+    write_best_effort(fd_, message.data(), message.size(), &sent);
+    if (!sent) {
+        return;
+    }
+    sent_player_rumble_[player] = active;
+    have_sent_player_rumble_[player] = true;
+}
+
 bool ExternalFrameProducer::poll(bool& out_reset_requested, std::string* error) {
     out_reset_requested = false;
     if (fd_ < 0) {
@@ -965,6 +1052,12 @@ bool ExternalFrameProducer::poll(bool& out_reset_requested, std::string* error) 
             if (body.size() >= kInputBytes) {
                 input_ = read_input(body.data());
                 have_input_ = true;
+            }
+        } else if (kind == ExternalControl::PlayerInput) {
+            if (body.size() >= 2 + kInputBytes && body[0] < kExternalPlayers) {
+                const int player = body[0];
+                player_connected_[player] = body[1] != 0u;
+                player_input_[player] = read_input(body.data() + 2);
             }
         } else if (kind == ExternalControl::RequestScreen) {
             if (!body.empty()) {
@@ -1034,6 +1127,8 @@ void ExternalFrameLink::send_input(const ExternalInput&) {}
 void ExternalFrameLink::request_screen(std::optional<ScreenId>, int, int,
                                        std::optional<ScreenId>) {}
 bool ExternalFrameLink::take_rumble(bool&) { return false; }
+void ExternalFrameLink::send_player_input(int, bool, const ExternalInput&) {}
+bool ExternalFrameLink::take_player_rumble(int&, bool&) { return false; }
 bool ExternalFrameLink::accept_peer(std::string*) { return false; }
 bool ExternalFrameLink::read_messages(std::string*) { return false; }
 bool ExternalFrameLink::handle_message(ExternalControl, const std::vector<uint8_t>&, std::string*) {
@@ -1056,6 +1151,7 @@ bool ExternalFrameProducer::send_audio(ScreenId, const int16_t*, std::size_t, st
     return false;
 }
 void ExternalFrameProducer::send_rumble(bool) {}
+void ExternalFrameProducer::send_player_rumble(int, bool) {}
 bool ExternalFrameProducer::poll(bool& out_reset_requested, std::string*) {
     out_reset_requested = false;
     return false;
