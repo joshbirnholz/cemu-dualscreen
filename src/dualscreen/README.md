@@ -66,7 +66,15 @@ other pad:
 - **DualScreen Player 1** to **Player 8** are the game's other controllers.
   Map each to a Pro Controller, Wii Remote or Classic Controller as the game
   wants; each has a default mapping that passes the buttons straight through.
-  The GamePad is not one of them, just as it is not on a Wii U.
+  On a Wii Remote that puts 1 on the north face button and 2 on the west one,
+  1 above 2 the way they sit on the remote. The GamePad is not one of them,
+  just as it is not on a Wii U.
+
+Each one's **Settings** button offers what is true of it: motion, rumble on or
+off (the link carries no strength), and a deadzone and range for each stick.
+There is no trigger axis to tune, because ZL and ZR are buttons on a GamePad,
+and nothing to calibrate, because the device holding the pad centres its own
+sticks.
 
 Which physical pad feeds which of these is decided by the shell, which can see
 every controller on every device, not by Cemu. So a mapping made once keeps

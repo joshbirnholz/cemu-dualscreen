@@ -29,6 +29,7 @@
 #include "wxgui/input/panels/ProControllerInputPanel.h"
 
 #include "wxgui/input/settings/DefaultControllerSettings.h"
+#include "wxgui/input/settings/DualScreenControllerSettings.h"
 #include "wxgui/input/panels/ClassicControllerInputPanel.h"
 #include "wxgui/input/panels/WiimoteInputPanel.h"
 #include "wxgui/input/settings/WiimoteControllerSettings.h"
@@ -957,6 +958,15 @@ void InputSettings2::on_controller_settings(wxCommandEvent& event)
 	case InputAPI::DSUClient:
 	{
 		DefaultControllerSettings wnd(this, wxGetMousePosition() + wxSize(5, 5), controller);
+		wnd.ShowModal();
+		break;
+	}
+
+	// Not DefaultControllerSettings: most of what that offers is not true of
+	// a controller Dualscreen feeds -- see DualScreenControllerSettings.
+	case InputAPI::DualScreen:
+	{
+		DualScreenControllerSettings wnd(this, wxGetMousePosition() + wxSize(5, 5), controller);
 		wnd.ShowModal();
 		break;
 	}

@@ -64,7 +64,8 @@ bool WiimoteController::set_default_mapping(const std::shared_ptr<ControllerBase
 	{
 		// A player's pad, in ds::ExternalButton order (a Wii U GamePad's
 		// buttons), laid onto a Wii Remote held upright with a Nunchuk: A and
-		// B where a pad has them, 1 and 2 on the other two face buttons, the
+		// B where a pad has them, 1 on the north face button (X) and 2 on the
+		// west one (Y) -- 1 above 2, as they sit on the remote -- the
 		// Nunchuk's Z and C on the left shoulder and trigger, and its stick on
 		// the left stick. Home has nowhere to come from -- the link carries no
 		// Home button -- so it is left for the player to map.
@@ -72,8 +73,8 @@ bool WiimoteController::set_default_mapping(const std::shared_ptr<ControllerBase
 		{
 			{kButtonId_A, kButton0},
 			{kButtonId_B, kButton1},
-			{kButtonId_1, kButton3},
-			{kButtonId_2, kButton2},
+			{kButtonId_1, kButton2},
+			{kButtonId_2, kButton3},
 
 			{kButtonId_Plus, kButton8},
 			{kButtonId_Minus, kButton9},
