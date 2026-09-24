@@ -119,15 +119,14 @@ WindowSystem::WindowHandleInfo initHandleContextFromWxWidgetsWindow(wxWindow* wx
 // something to type into. A no-op off GTK.
 void wxDropInputMethod(wxWindow* window);
 
-// Keeps the pointer hidden over `window` while it is fullscreen, unless a real
-// mouse or trackpad is what last moved it.
+// Keeps the pointer hidden over `window` while it fills the screen, unless a
+// real mouse or trackpad is what last moved it.
 //
-// A touchscreen reaches a GTK window as pointer events -- which is what lets
-// the GamePad be touched at all -- and the pointer follows the finger, so a
-// Steam Deck's touchscreen left an arrow on the game wherever it was last
-// touched; Cemu's own fullscreen timer then brings the arrow back whenever it
-// has moved, whoever moved it. GTK knows which device every event came from,
-// so the arrow comes back for a mouse and not for a finger. How each movement
-// was classified is logged the first few times and whenever it changes. A
-// no-op off GTK.
+// A touchscreen moves the pointer -- which is what lets the GamePad be
+// touched at all -- so a Steam Deck's touchscreen left an arrow on the game
+// wherever it was last touched, and Cemu's own fullscreen timer brings the
+// arrow back whenever it has moved, whoever moved it. In Game Mode a touch
+// even arrives from a device that calls itself a mouse, so which one moved it
+// is judged by how it moved -- see OnAnyEventForTouchCursor(). Logged the
+// first few times and whenever what is shown changes. A no-op off GTK.
 void wxHideCursorWhileTouched(wxWindow* window);

@@ -4,6 +4,9 @@
 #include <wx/stattext.h>
 #include <wx/slider.h>
 #include <wx/dirdlg.h>
+#include <wx/display.h>
+
+#include <cmath>
 
 #if BOOST_OS_LINUX || BOOST_OS_BSD
 #include <gtk/gtk.h>
@@ -82,27 +85,59 @@ namespace
 	{
 		wxWindow* window = nullptr;
 		guint timer = 0;
-		// Whether the last thing to move the pointer was a real mouse or
-		// trackpad. Until one has, the pointer is taken to be a finger's.
+		// Whether a real mouse or trackpad is what last moved the pointer.
+		// Until one has, it is taken to be a finger's.
 		bool mouse_moved_it = false;
 		bool hidden = false;
+		// Where the pointer was last seen, in screen pixels.
+		bool placed = false;
+		double x = 0.0;
+		double y = 0.0;
+		// Short glides in a row with nothing held. One is a finger landing
+		// near where the last one did; a mouse makes a run of them.
+		int glides = 0;
 		int reported = 0;
 	};
 
-	// Hidden in fullscreen unless a mouse is what last moved it. Cemu's own
-	// fullscreen timer brings the pointer back whenever it has moved, however
-	// it moved -- which a touch does -- so this sets the window's own cursor,
-	// which that leaves alone.
+	// Fullscreen as Cemu means it, or a window that covers its whole display
+	// anyway -- which is how it runs in a Steam Deck's Game Mode, where the
+	// compositor shows every window full screen whether it asked or not.
+	bool FillsItsDisplay(wxWindow* window)
+	{
+		auto* frame = dynamic_cast<wxTopLevelWindow*>(wxGetTopLevelParent(window));
+		if (!frame)
+			return false;
+		if (frame->IsFullScreen())
+			return true;
+		const int index = wxDisplay::GetFromWindow(frame);
+		if (index == wxNOT_FOUND)
+			return false;
+		return frame->GetScreenRect().Contains(wxDisplay(index).GetGeometry());
+	}
+
+	// Hidden when the game fills the screen, unless a mouse is what last moved
+	// it. Cemu's own fullscreen timer brings the pointer back whenever it has
+	// moved, however it moved -- which a touch does -- so this sets the
+	// window's own cursor, which that leaves alone.
 	void ApplyTouchCursor(TouchCursor* state)
 	{
-		auto* frame = dynamic_cast<wxTopLevelWindow*>(wxGetTopLevelParent(state->window));
-		const bool fullscreen = frame && frame->IsFullScreen();
-		const bool hide = fullscreen && !state->mouse_moved_it;
+		const bool hide = !state->mouse_moved_it && FillsItsDisplay(state->window);
 		if (hide == state->hidden)
 			return;
 		state->hidden = hide;
 		state->window->SetCursor(hide ? wxCursor(wxCURSOR_BLANK) : wxNullCursor);
 	}
+
+	// Which of the two moved the pointer, from how it moved rather than what
+	// claims to have moved it: a Steam Deck in Game Mode hands a touch over
+	// as ordinary mouse input, from a device that says it is a mouse. What a
+	// finger cannot do is hover. A mouse or trackpad glides the pointer about
+	// with nothing pressed; a finger only moves it pressed, or makes it jump
+	// straight to where it lands. So a press hides it, a jump leaves it
+	// hidden, a drag leaves it as it was, and only a short glide with nothing
+	// held shows it -- which is a mouse, whatever the device says.
+	constexpr double kGlidePixels = 48.0;
+	constexpr int kGlidesForAMouse = 3;
 
 	// Runs ahead of wxWidgets' own handlers for the same event -- "event" is
 	// emitted before the specific signal each one connects to -- and never
@@ -110,43 +145,77 @@ namespace
 	gboolean OnAnyEventForTouchCursor(GtkWidget*, GdkEvent* event, gpointer user_data)
 	{
 		auto* state = static_cast<TouchCursor*>(user_data);
-		bool from_touch = false;
+		const char* verdict = nullptr;
 		switch (event->type)
 		{
 		case GDK_TOUCH_BEGIN:
 		case GDK_TOUCH_UPDATE:
 		case GDK_TOUCH_END:
-			from_touch = true;
+			state->mouse_moved_it = false;
+			state->glides = 0;
+			verdict = "a touch";
 			break;
-		case GDK_MOTION_NOTIFY:
 		case GDK_BUTTON_PRESS:
 		case GDK_BUTTON_RELEASE:
+			state->mouse_moved_it = false;
+			state->glides = 0;
+			state->placed = true;
+			state->x = event->button.x_root;
+			state->y = event->button.y_root;
+			verdict = "a press";
+			break;
+		case GDK_MOTION_NOTIFY:
 		{
-			// A finger arrives as pointer events too, either marked as made up
-			// from a touch or coming from the touchscreen itself.
+			const GdkEventMotion& motion = event->motion;
 			GdkDevice* device = gdk_event_get_source_device(event);
-			const GdkInputSource source =
-				device ? gdk_device_get_source(device) : GDK_SOURCE_MOUSE;
-			from_touch = gdk_event_get_pointer_emulated(event) ||
-						 source == GDK_SOURCE_TOUCHSCREEN;
-			// Said the first few times, and whenever it changes: how the
-			// pointer is being moved is the one thing that decides this, and
-			// on a machine like a Steam Deck in Game Mode it is not a given.
-			if (state->reported < 4 || from_touch == state->mouse_moved_it)
+			const bool said_touch = gdk_event_get_pointer_emulated(event) ||
+									(device && gdk_device_get_source(device) == GDK_SOURCE_TOUCHSCREEN);
+			const bool held = (motion.state & (GDK_BUTTON1_MASK | GDK_BUTTON2_MASK | GDK_BUTTON3_MASK)) != 0;
+			const double distance = state->placed
+				? std::abs(motion.x_root - state->x) + std::abs(motion.y_root - state->y)
+				: kGlidePixels * 2.0;
+			state->placed = true;
+			state->x = motion.x_root;
+			state->y = motion.y_root;
+			if (said_touch)
 			{
-				++state->reported;
-				cemuLog_log(LogType::Force, "pointer moved by {} ({}, source {}, {})",
-							from_touch ? "touch" : "mouse",
-							device ? gdk_device_get_name(device) : "no device", (int)source,
-							gdk_event_get_pointer_emulated(event) ? "emulated" : "not emulated");
+				state->mouse_moved_it = false;
+				state->glides = 0;
+				verdict = "a touch, by its device";
+			}
+			else if (held)
+			{
+				state->glides = 0;
+				verdict = "a drag";
+			}
+			else if (distance > kGlidePixels)
+			{
+				state->mouse_moved_it = false;
+				state->glides = 0;
+				verdict = "a jump";
+			}
+			else
+			{
+				if (++state->glides >= kGlidesForAMouse)
+					state->mouse_moved_it = true;
+				verdict = "a glide";
 			}
 			break;
 		}
 		default:
 			return FALSE;
 		}
-		state->mouse_moved_it = !from_touch;
+		const bool was_hidden = state->hidden;
 		ApplyTouchCursor(state);
+		// Said the first few times, and whenever it changes what is shown:
+		// the one thing this rests on is how pointer input reaches Cemu, and
+		// on a machine like a Steam Deck in Game Mode that is not a given.
+		if (state->reported < 6 || was_hidden != state->hidden)
+		{
+			++state->reported;
+			cemuLog_log(LogType::Force, "pointer: {} over the game; {}", verdict,
+						state->hidden ? "hidden" : "shown");
+		}
 		return FALSE;
 	}
 
