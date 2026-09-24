@@ -1636,6 +1636,9 @@ void MainWindow::CreateCanvas()
 	// Before it is given focus below, which is what would raise Steam's
 	// on-screen keyboard in Game Mode -- see wxDropInputMethod().
 	wxDropInputMethod(m_render_canvas);
+	// And no arrow left where a finger last touched it -- see
+	// wxHideCursorWhileTouched().
+	wxHideCursorWhileTouched(m_render_canvas);
 	m_game_panel->GetSizer()->Add(m_render_canvas, 1, wxEXPAND, 0, nullptr);
 
 	GetSizer()->Layout();

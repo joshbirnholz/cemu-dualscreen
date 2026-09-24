@@ -118,3 +118,13 @@ WindowSystem::WindowHandleInfo initHandleContextFromWxWidgetsWindow(wxWindow* wx
 // Real text fields keep theirs, so the keyboard still comes up where there is
 // something to type into. A no-op off GTK.
 void wxDropInputMethod(wxWindow* window);
+
+// Hides the pointer over `window` while it is being touched, and brings it
+// back the moment a real mouse or trackpad moves it.
+//
+// A touchscreen reaches a GTK window as pointer events -- which is what lets
+// the GamePad be touched at all -- and the pointer follows the finger, so a
+// Steam Deck's touchscreen left an arrow sitting on the game wherever it was
+// last touched. GTK knows which device every one of those events came from,
+// so the arrow goes only for a finger. A no-op off GTK.
+void wxHideCursorWhileTouched(wxWindow* window);

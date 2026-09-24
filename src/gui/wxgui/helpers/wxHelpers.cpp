@@ -75,6 +75,54 @@ uint32 fix_raw_keycode(uint32 keycode, uint32 raw_flags)
 	return keycode;
 }
 
+#if (BOOST_OS_LINUX || BOOST_OS_BSD) && defined(__WXGTK__)
+namespace
+{
+	// Runs ahead of wxWidgets' own handlers for the same event -- "event" is
+	// emitted before the specific signal each one connects to -- and never
+	// consumes anything, so the window still gets every event it did before.
+	gboolean OnAnyEventForTouchCursor(GtkWidget* widget, GdkEvent* event, gpointer user_data)
+	{
+		switch (event->type)
+		{
+		case GDK_MOTION_NOTIFY:
+		case GDK_BUTTON_PRESS:
+		case GDK_BUTTON_RELEASE:
+		case GDK_TOUCH_BEGIN:
+		case GDK_TOUCH_UPDATE:
+			break;
+		default:
+			return FALSE;
+		}
+		GdkDevice* device = gdk_event_get_source_device(event);
+		if (!device)
+			return FALSE;
+		const bool touched = gdk_device_get_source(device) == GDK_SOURCE_TOUCHSCREEN;
+		const bool hidden = g_object_get_data(G_OBJECT(widget), "cemu-touch-cursor-hidden") != nullptr;
+		if (touched == hidden)
+			return FALSE;
+		auto* window = static_cast<wxWindow*>(user_data);
+		window->SetCursor(touched ? wxCursor(wxCURSOR_BLANK) : wxNullCursor);
+		g_object_set_data(G_OBJECT(widget), "cemu-touch-cursor-hidden", touched ? GINT_TO_POINTER(1) : nullptr);
+		return FALSE;
+	}
+}
+#endif
+
+void wxHideCursorWhileTouched(wxWindow* window)
+{
+#if (BOOST_OS_LINUX || BOOST_OS_BSD) && defined(__WXGTK__)
+	if (!window)
+		return;
+	// The widget the events are delivered to: the drawing area wxWidgets puts
+	// inside a window it draws itself, where there is one.
+	GtkWidget* widget = window->m_wxwindow ? window->m_wxwindow : window->m_widget;
+	if (!widget)
+		return;
+	g_signal_connect(widget, "event", G_CALLBACK(OnAnyEventForTouchCursor), window);
+#endif
+}
+
 void wxDropInputMethod(wxWindow* window)
 {
 #if (BOOST_OS_LINUX || BOOST_OS_BSD) && defined(__WXGTK__)
