@@ -119,8 +119,9 @@ WindowSystem::WindowHandleInfo initHandleContextFromWxWidgetsWindow(wxWindow* wx
 // something to type into. A no-op off GTK.
 void wxDropInputMethod(wxWindow* window);
 
-// Hides the pointer over `window` while it is being touched, and brings it
-// back the moment a real mouse or trackpad moves it.
+// Hides the pointer over `window` while it is being touched in fullscreen, and
+// brings it back the moment a real mouse or trackpad moves it -- or the next
+// time anything moves it once the window is no longer fullscreen.
 //
 // A touchscreen reaches a GTK window as pointer events -- which is what lets
 // the GamePad be touched at all -- and the pointer follows the finger, so a

@@ -97,11 +97,15 @@ namespace
 		GdkDevice* device = gdk_event_get_source_device(event);
 		if (!device)
 			return FALSE;
-		const bool touched = gdk_device_get_source(device) == GDK_SOURCE_TOUCHSCREEN;
+		auto* window = static_cast<wxWindow*>(user_data);
+		// Only in fullscreen, where the game is all there is to look at. In a
+		// window the pointer stays, touched or not.
+		auto* frame = dynamic_cast<wxTopLevelWindow*>(wxGetTopLevelParent(window));
+		const bool fullscreen = frame && frame->IsFullScreen();
+		const bool touched = fullscreen && gdk_device_get_source(device) == GDK_SOURCE_TOUCHSCREEN;
 		const bool hidden = g_object_get_data(G_OBJECT(widget), "cemu-touch-cursor-hidden") != nullptr;
 		if (touched == hidden)
 			return FALSE;
-		auto* window = static_cast<wxWindow*>(user_data);
 		window->SetCursor(touched ? wxCursor(wxCURSOR_BLANK) : wxNullCursor);
 		g_object_set_data(G_OBJECT(widget), "cemu-touch-cursor-hidden", touched ? GINT_TO_POINTER(1) : nullptr);
 		return FALSE;
