@@ -106,3 +106,15 @@ void update_slider_text(wxCommandEvent& event, const wxFormatString& format = "%
 uint32 fix_raw_keycode(uint32 keycode, uint32 raw_flags);
 
 WindowSystem::WindowHandleInfo initHandleContextFromWxWidgetsWindow(wxWindow* wxw);
+
+// Takes a window that is drawn into, not typed into, off the input method.
+//
+// wxGTK gives every custom-drawn window an input method context and focuses it
+// whenever the window takes keyboard focus. On a Steam Deck in Game Mode the
+// input method is Steam's own, and a focused context is what opens Steam's
+// on-screen keyboard -- so it came up every time a game started, when the
+// render canvas takes focus. Keys still reach the window as key and char
+// events; only text composition, which a game picture has no use for, goes.
+// Real text fields keep theirs, so the keyboard still comes up where there is
+// something to type into. A no-op off GTK.
+void wxDropInputMethod(wxWindow* window);

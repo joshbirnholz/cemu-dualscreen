@@ -108,6 +108,9 @@ void PadViewFrame::InitializeRenderCanvas()
 
 	m_render_canvas->Bind(wxEVT_GESTURE_PAN, &PadViewFrame::OnGesturePan, this);
 
+	// As the main window's canvas: drawn into, never typed into, and focusing
+	// it must not raise Steam's keyboard. See wxDropInputMethod().
+	wxDropInputMethod(m_render_canvas);
 	m_render_canvas->SetFocus();
 	SendSizeEvent();
 }

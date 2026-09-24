@@ -75,6 +75,21 @@ uint32 fix_raw_keycode(uint32 keycode, uint32 raw_flags)
 	return keycode;
 }
 
+void wxDropInputMethod(wxWindow* window)
+{
+#if (BOOST_OS_LINUX || BOOST_OS_BSD) && defined(__WXGTK__)
+	// wxGTK checks for a null context everywhere it uses one -- windows made
+	// without an expose handler never get one at all -- and frees whatever is
+	// here when the window goes, so releasing it now and leaving null is the
+	// state such a window would have had from the start.
+	if (window && window->m_imContext)
+	{
+		g_object_unref(window->m_imContext);
+		window->m_imContext = nullptr;
+	}
+#endif
+}
+
 WindowSystem::WindowHandleInfo initHandleContextFromWxWidgetsWindow(wxWindow* wxw)
 {
 	WindowSystem::WindowHandleInfo handleInfo;

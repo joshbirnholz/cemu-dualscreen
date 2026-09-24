@@ -1633,6 +1633,9 @@ void MainWindow::CreateCanvas()
 	m_render_canvas->Bind(wxEVT_CHAR, &MainWindow::OnChar, this);
 
 	m_render_canvas->SetDropTarget(new wxAmiiboDropTarget(this));
+	// Before it is given focus below, which is what would raise Steam's
+	// on-screen keyboard in Game Mode -- see wxDropInputMethod().
+	wxDropInputMethod(m_render_canvas);
 	m_game_panel->GetSizer()->Add(m_render_canvas, 1, wxEXPAND, 0, nullptr);
 
 	GetSizer()->Layout();
