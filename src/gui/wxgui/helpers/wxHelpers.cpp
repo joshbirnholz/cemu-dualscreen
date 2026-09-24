@@ -78,37 +78,92 @@ uint32 fix_raw_keycode(uint32 keycode, uint32 raw_flags)
 #if (BOOST_OS_LINUX || BOOST_OS_BSD) && defined(__WXGTK__)
 namespace
 {
+	struct TouchCursor
+	{
+		wxWindow* window = nullptr;
+		guint timer = 0;
+		// Whether the last thing to move the pointer was a real mouse or
+		// trackpad. Until one has, the pointer is taken to be a finger's.
+		bool mouse_moved_it = false;
+		bool hidden = false;
+		int reported = 0;
+	};
+
+	// Hidden in fullscreen unless a mouse is what last moved it. Cemu's own
+	// fullscreen timer brings the pointer back whenever it has moved, however
+	// it moved -- which a touch does -- so this sets the window's own cursor,
+	// which that leaves alone.
+	void ApplyTouchCursor(TouchCursor* state)
+	{
+		auto* frame = dynamic_cast<wxTopLevelWindow*>(wxGetTopLevelParent(state->window));
+		const bool fullscreen = frame && frame->IsFullScreen();
+		const bool hide = fullscreen && !state->mouse_moved_it;
+		if (hide == state->hidden)
+			return;
+		state->hidden = hide;
+		state->window->SetCursor(hide ? wxCursor(wxCURSOR_BLANK) : wxNullCursor);
+	}
+
 	// Runs ahead of wxWidgets' own handlers for the same event -- "event" is
 	// emitted before the specific signal each one connects to -- and never
 	// consumes anything, so the window still gets every event it did before.
-	gboolean OnAnyEventForTouchCursor(GtkWidget* widget, GdkEvent* event, gpointer user_data)
+	gboolean OnAnyEventForTouchCursor(GtkWidget*, GdkEvent* event, gpointer user_data)
 	{
+		auto* state = static_cast<TouchCursor*>(user_data);
+		bool from_touch = false;
 		switch (event->type)
 		{
+		case GDK_TOUCH_BEGIN:
+		case GDK_TOUCH_UPDATE:
+		case GDK_TOUCH_END:
+			from_touch = true;
+			break;
 		case GDK_MOTION_NOTIFY:
 		case GDK_BUTTON_PRESS:
 		case GDK_BUTTON_RELEASE:
-		case GDK_TOUCH_BEGIN:
-		case GDK_TOUCH_UPDATE:
+		{
+			// A finger arrives as pointer events too, either marked as made up
+			// from a touch or coming from the touchscreen itself.
+			GdkDevice* device = gdk_event_get_source_device(event);
+			const GdkInputSource source =
+				device ? gdk_device_get_source(device) : GDK_SOURCE_MOUSE;
+			from_touch = gdk_event_get_pointer_emulated(event) ||
+						 source == GDK_SOURCE_TOUCHSCREEN;
+			// Said the first few times, and whenever it changes: how the
+			// pointer is being moved is the one thing that decides this, and
+			// on a machine like a Steam Deck in Game Mode it is not a given.
+			if (state->reported < 4 || from_touch == state->mouse_moved_it)
+			{
+				++state->reported;
+				cemuLog_log(LogType::Force, "pointer moved by {} ({}, source {}, {})",
+							from_touch ? "touch" : "mouse",
+							device ? gdk_device_get_name(device) : "no device", (int)source,
+							gdk_event_get_pointer_emulated(event) ? "emulated" : "not emulated");
+			}
 			break;
+		}
 		default:
 			return FALSE;
 		}
-		GdkDevice* device = gdk_event_get_source_device(event);
-		if (!device)
-			return FALSE;
-		auto* window = static_cast<wxWindow*>(user_data);
-		// Only in fullscreen, where the game is all there is to look at. In a
-		// window the pointer stays, touched or not.
-		auto* frame = dynamic_cast<wxTopLevelWindow*>(wxGetTopLevelParent(window));
-		const bool fullscreen = frame && frame->IsFullScreen();
-		const bool touched = fullscreen && gdk_device_get_source(device) == GDK_SOURCE_TOUCHSCREEN;
-		const bool hidden = g_object_get_data(G_OBJECT(widget), "cemu-touch-cursor-hidden") != nullptr;
-		if (touched == hidden)
-			return FALSE;
-		window->SetCursor(touched ? wxCursor(wxCURSOR_BLANK) : wxNullCursor);
-		g_object_set_data(G_OBJECT(widget), "cemu-touch-cursor-hidden", touched ? GINT_TO_POINTER(1) : nullptr);
+		state->mouse_moved_it = !from_touch;
+		ApplyTouchCursor(state);
 		return FALSE;
+	}
+
+	gboolean OnTouchCursorTick(gpointer user_data)
+	{
+		// Also on a clock, for the times nothing moves it: the window going
+		// fullscreen, or the game starting with the pointer already over it.
+		ApplyTouchCursor(static_cast<TouchCursor*>(user_data));
+		return G_SOURCE_CONTINUE;
+	}
+
+	void OnTouchCursorWidgetGone(GtkWidget*, gpointer user_data)
+	{
+		auto* state = static_cast<TouchCursor*>(user_data);
+		if (state->timer)
+			g_source_remove(state->timer);
+		delete state;
 	}
 }
 #endif
@@ -123,7 +178,12 @@ void wxHideCursorWhileTouched(wxWindow* window)
 	GtkWidget* widget = window->m_wxwindow ? window->m_wxwindow : window->m_widget;
 	if (!widget)
 		return;
-	g_signal_connect(widget, "event", G_CALLBACK(OnAnyEventForTouchCursor), window);
+	auto* state = new TouchCursor();
+	state->window = window;
+	g_signal_connect(widget, "event", G_CALLBACK(OnAnyEventForTouchCursor), state);
+	g_signal_connect(widget, "destroy", G_CALLBACK(OnTouchCursorWidgetGone), state);
+	state->timer = g_timeout_add(500, OnTouchCursorTick, state);
+	ApplyTouchCursor(state);
 #endif
 }
 
