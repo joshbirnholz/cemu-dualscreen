@@ -51,6 +51,10 @@ struct ExternalStreamInfo {
     double frames_per_second = 0.0;
 };
 
+// Microseconds on a clock both ends of the link read the same: the system's
+// monotonic clock, which on one machine is one clock whichever process asks.
+uint64_t external_frame_clock_us();
+
 // One screen's pixels. A copy rather than a pointer into the shared memory: the
 // producer is free to overwrite a slot the moment it has published a newer one,
 // and a caller that held a pointer across a frame would be reading whatever it
@@ -72,7 +76,10 @@ struct ExternalFrame {
 // player asked for that only the producer can do.
 enum class ExternalControl : uint8_t {
     Hello = 1,     // producer -> consumer, an ExternalStreamInfo
-    Frame = 2,     // producer -> consumer, "screen S, slot N, serial X"
+    // producer -> consumer, "screen S, slot N, serial X", then optionally
+    // "captured at T" (external_frame_clock_us()). A consumer that predates T
+    // reads only what it knows; one that finds no T times nothing.
+    Frame = 2,
     Audio = 3,     // producer -> consumer, interleaved stereo int16
     Reset = 4,     // consumer -> producer, the player chose Reset Game
     Shutdown = 5,  // either way, "this session is over"
@@ -310,6 +317,28 @@ public:
 
     // The newest frame published for this screen since the last call, if any.
     bool take_frame(ScreenId screen, ExternalFrame& out);
+    // Waits up to `timeout_ms` for the producer to say something -- a new
+    // frame, most often -- so a loop can run at the game's pace rather than
+    // at its own. True when there is something to read; at once when there
+    // is nothing connected to wait on.
+    bool wait_for_message(int timeout_ms) const;
+    // Frames the producer announced for a screen since the last ask, and how
+    // many of those were overwritten by the next before anything took them.
+    // The game's own rate, and what reading it too slowly cost.
+    // With a producer that says when it captured each frame, also how old the
+    // frames were: when announced (the producer's own delay -- the GPU
+    // finishing, the readback, the copy) and when taken (that plus this app
+    // getting round to them).
+    struct FrameCounts {
+        unsigned announced = 0;
+        unsigned missed = 0;
+        unsigned timed_announced = 0;
+        uint64_t announced_age_us = 0;  // summed over timed_announced
+        unsigned timed_taken = 0;
+        uint64_t taken_age_us = 0;  // summed over timed_taken
+        uint64_t taken_age_max_us = 0;
+    };
+    FrameCounts take_frame_counts(ScreenId screen);
     // Audio sent for this screen since the last call, interleaved stereo.
     // Drained rather than peeked: it is played once. Tagged by screen for the
     // same reason frames are: a Wii U's TV and GamePad each have their own
@@ -389,6 +418,7 @@ private:
     struct Pending {
         int slot = -1;
         uint64_t serial = 0;
+        uint64_t captured_us = 0;  // 0 when the producer did not say
     };
 
     bool accept_peer(std::string* error);
@@ -413,6 +443,7 @@ private:
     std::vector<uint8_t> inbox_;
     std::vector<int16_t> audio_[2];
     Pending pending_[2];
+    FrameCounts counts_[2];
     ExternalInput sent_input_;
     bool have_sent_input_ = false;
     // What request_screen() last sent, so a repeat of the same request costs
@@ -451,8 +482,11 @@ public:
     // Writes one screen into the next free slot and announces it. `serial` ties
     // the two screens of one moment together, so a consumer never shows the
     // television from one frame beside the GamePad from another.
+    // `captured_us` is when the frame was captured, by external_frame_clock_us(),
+    // for the consumer to say how old frames are by the time it has them; 0
+    // means now.
     bool publish(ScreenId screen, uint64_t serial, const uint32_t* pixels, int width, int height,
-                 int stride_pixels, std::string* error);
+                 int stride_pixels, std::string* error, uint64_t captured_us = 0);
     // Tagged by screen: a Wii U's TV and GamePad audio are independent
     // streams a player can route separately, so they cross the link as two.
     bool send_audio(ScreenId screen, const int16_t* interleaved_stereo, std::size_t frames,

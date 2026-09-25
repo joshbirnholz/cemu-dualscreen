@@ -680,7 +680,12 @@ private:
 		// copy above does not change; only how DualscreenDrain reads them does.
 		bool packed_a2b10g10r10 = false;
 		uint64 commandBufferId = 0;
+		// Where commandBufferId sits in the command buffer pool, for its fence:
+		// see DualscreenCopyFinished().
+		size_t commandBufferIndex = 0;
 		uint64 serial = 0;
+		// When the copy was recorded, by ds::external_frame_clock_us().
+		uint64 capturedUs = 0;
 		// Set by the GPU thread once a capture is recorded, cleared by
 		// m_dualscreenThread once it has finished reading the bytes that
 		// capture produced -- the one thing the two threads touch about the
@@ -754,6 +759,7 @@ private:
 	// frame rather than capturing nothing.
 	bool EnsureDualscreenConvertImage(size_t screenIndex, int width, int height, bool srgb);
 	void DualscreenDrain(size_t screenIndex);
+	bool DualscreenCopyFinished(const DualscreenReadback& slot) const;
 	void DualscreenReleaseBuffers();
 	// The CPU-side half of a Dualscreen readback -- unpacking whatever format
 	// the source texture was in and copying it to where PublishScreen can

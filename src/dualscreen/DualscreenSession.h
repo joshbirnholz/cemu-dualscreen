@@ -103,9 +103,11 @@ public:
 
 	// One screen, already XRGB8888 and tightly packed. Both screens of one
 	// frame must go under the same serial or the two devices can show halves
-	// of different moments.
+	// of different moments. `capturedUs` is when the copy was recorded, by
+	// ds::external_frame_clock_us(), so the shell can say how old frames are
+	// by the time it has them; 0 means now.
 	void PublishScreen(ds::ScreenId screen, uint64_t serial, const uint32_t* pixels, int width,
-					   int height);
+					   int height, uint64_t capturedUs = 0);
 
 	// Tagged by screen: a Wii U's TV and GamePad audio are independent, and
 	// the shell routes each by whatever the player set that screen's own

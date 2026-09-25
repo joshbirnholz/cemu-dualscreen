@@ -302,7 +302,7 @@ void DualscreenSession::CaptureSize(int sourceWidth, int sourceHeight, int& outW
 }
 
 void DualscreenSession::PublishScreen(ds::ScreenId screen, uint64_t serial, const uint32_t* pixels,
-									  int width, int height)
+									  int width, int height, uint64_t capturedUs)
 {
 	static std::chrono::steady_clock::time_point s_windowStart = std::chrono::steady_clock::now();
 	static double s_totalMs = 0.0;
@@ -318,7 +318,7 @@ void DualscreenSession::PublishScreen(ds::ScreenId screen, uint64_t serial, cons
 		return;
 
 	std::string error;
-	if (!m_producer.publish(screen, serial, pixels, width, height, width, &error))
+	if (!m_producer.publish(screen, serial, pixels, width, height, width, &error, capturedUs))
 	{
 		// Not a reason to end the session. The likely cause is a screen larger
 		// than the shared memory holds, which is a property of how this Cemu is

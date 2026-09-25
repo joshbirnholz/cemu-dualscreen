@@ -263,6 +263,32 @@ bool VulkanRenderer::EnsureDualscreenConvertImage(size_t screenIndex, int width,
 	return true;
 }
 
+// Whether the command buffer a capture was recorded into has finished on the
+// GPU, so its bytes are there to read.
+//
+// Cemu's own count of finished buffers (HasCommandBufferFinished) only moves
+// when the GPU thread next submits and looks at its fences on the way
+// (ProcessFinishedCommandBuffers), which can be most of a frame after the
+// buffer actually finished -- and every millisecond of that was a millisecond
+// the picture waited here before going anywhere. So the buffer's own fence is
+// asked as well, which says so the moment the GPU is done.
+//
+// That fence can be trusted to be about this buffer: it is reset when its
+// place in the pool becomes the one being recorded into (SubmitCommandBuffer),
+// which is before this capture was recorded, and it is only reset again once
+// the pool has come all the way round -- by which time Cemu's own count has
+// passed this buffer, and the first check answers instead. A reset landing
+// between the two checks reads as "not yet", and the next pass says yes.
+bool VulkanRenderer::DualscreenCopyFinished(const DualscreenReadback& slot) const
+{
+	if (HasCommandBufferFinished(slot.commandBufferId))
+		return true;
+	// Not submitted yet: its fence is unsignalled until it has been, and
+	// finished, so asking early is harmless -- just a no.
+	return vkGetFenceStatus(m_logicalDevice, m_cmdBufferFences[slot.commandBufferIndex]) ==
+		   VK_SUCCESS;
+}
+
 void VulkanRenderer::DualscreenDrain(size_t screenIndex)
 {
 	auto& ring = m_dualscreenReadback[screenIndex];
@@ -277,7 +303,7 @@ void VulkanRenderer::DualscreenDrain(size_t screenIndex)
 		auto& slot = ring[(m_dualscreenNextSlot[screenIndex] + step) % ring.size()];
 		if (!slot.pending.load(std::memory_order_acquire))
 			continue;
-		if (!HasCommandBufferFinished(slot.commandBufferId))
+		if (!DualscreenCopyFinished(slot))
 			break;
 
 		const size_t count = (size_t)slot.width * slot.height;
@@ -361,7 +387,7 @@ void VulkanRenderer::DualscreenDrain(size_t screenIndex)
 			publishFrom = m_dualscreenPixels.data();
 		}
 		DualscreenSession::instance().PublishScreen(screen, slot.serial, publishFrom, slot.width,
-													slot.height);
+													slot.height, slot.capturedUs);
 		// Release, pairing with the acquire load the GPU thread does before
 		// it reuses this slot: everything this call touched above must be
 		// visibly done before that thread can see the slot as free again.
@@ -678,9 +704,12 @@ void VulkanRenderer::HandleDualscreenFrame(LatteTextureView* texView, bool padVi
 	// Both screens of one emulated frame share this, which is what stops the
 	// two devices showing halves of different moments.
 	slot.serial = LatteGPUState.frameCounter;
-	// The buffer this copy was recorded into. Once it has finished for its own
-	// reasons, the bytes are there -- no fence of our own, and no waiting.
+	// The buffer this copy was recorded into, and its place in the pool. Once
+	// it has finished for its own reasons, the bytes are there -- no fence of
+	// our own, and no waiting (see DualscreenCopyFinished()).
 	slot.commandBufferId = GetCurrentCommandBufferId();
+	slot.commandBufferIndex = m_commandBufferIndex;
+	slot.capturedUs = ds::external_frame_clock_us();
 	// Release, pairing with the acquire load m_dualscreenThread does before
 	// touching any of the fields above: everything this call wrote to the
 	// slot must be visible to that thread once it sees this.

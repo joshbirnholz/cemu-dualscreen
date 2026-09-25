@@ -1,5 +1,7 @@
 #include "core/external_frame_link.hpp"
 
+#include <algorithm>
+#include <chrono>
 #include <cstring>
 
 #if defined(__linux__)
@@ -555,11 +557,27 @@ bool ExternalFrameLink::handle_message(ExternalControl kind, const std::vector<u
             }
             const uint64_t serial = static_cast<uint64_t>(read_u32(body.data() + 5)) |
                                     (static_cast<uint64_t>(read_u32(body.data() + 9)) << 32);
+            uint64_t captured_us = 0;
+            if (body.size() >= 21) {
+                captured_us = static_cast<uint64_t>(read_u32(body.data() + 13)) |
+                              (static_cast<uint64_t>(read_u32(body.data() + 17)) << 32);
+            }
             // Only the newest is kept: this is a live picture and an older
             // frame has nothing to offer once a newer one exists.
+            FrameCounts& counts = counts_[screen_index];
+            ++counts.announced;
+            if (pending_[screen_index].slot >= 0) {
+                ++counts.missed;  // the last one, never taken
+            }
+            const uint64_t now_us = external_frame_clock_us();
+            if (captured_us != 0 && captured_us <= now_us) {
+                ++counts.timed_announced;
+                counts.announced_age_us += now_us - captured_us;
+            }
             if (serial >= pending_[screen_index].serial) {
                 pending_[screen_index].slot = slot;
                 pending_[screen_index].serial = serial;
+                pending_[screen_index].captured_us = captured_us;
             }
             return true;
         }
@@ -615,6 +633,24 @@ bool ExternalFrameLink::handle_message(ExternalControl kind, const std::vector<u
     return true;
 }
 
+bool ExternalFrameLink::wait_for_message(int timeout_ms) const {
+    const int fd = peer_fd_ >= 0 ? peer_fd_ : listen_fd_;
+    if (fd < 0) {
+        return false;
+    }
+    pollfd waiting {};
+    waiting.fd = fd;
+    waiting.events = POLLIN;
+    return ::poll(&waiting, 1, timeout_ms) > 0;
+}
+
+ExternalFrameLink::FrameCounts ExternalFrameLink::take_frame_counts(ScreenId screen) {
+    const int index = ExternalSharedHeader::screen_index(screen);
+    const FrameCounts counts = counts_[index];
+    counts_[index] = FrameCounts();
+    return counts;
+}
+
 bool ExternalFrameLink::take_frame(ScreenId screen, ExternalFrame& out) {
     out.pixels.clear();
     out.width = 0;
@@ -625,6 +661,15 @@ bool ExternalFrameLink::take_frame(ScreenId screen, ExternalFrame& out) {
     }
     const int slot = pending_[index].slot;
     pending_[index].slot = -1;  // taken; nothing new until the next announcement
+    const uint64_t captured_us = pending_[index].captured_us;
+    const uint64_t now_us = external_frame_clock_us();
+    if (captured_us != 0 && captured_us <= now_us) {
+        FrameCounts& counts = counts_[index];
+        const uint64_t age_us = now_us - captured_us;
+        ++counts.timed_taken;
+        counts.taken_age_us += age_us;
+        counts.taken_age_max_us = std::max(counts.taken_age_max_us, age_us);
+    }
 
     ExternalSlotState& state = header()->slots[index][slot];
     // Twice around at most. A producer overwriting the slot we want is a lost
@@ -911,7 +956,7 @@ void ExternalFrameProducer::close() {
 
 bool ExternalFrameProducer::publish(ScreenId screen, uint64_t serial, const uint32_t* pixels,
                                     int width, int height, int stride_pixels,
-                                    std::string* error) {
+                                    std::string* error, uint64_t captured_us) {
     if (fd_ < 0 || memory_ == nullptr || pixels == nullptr) {
         if (error != nullptr) *error = "not connected";
         return false;
@@ -955,6 +1000,11 @@ bool ExternalFrameProducer::publish(ScreenId screen, uint64_t serial, const uint
     put_u32(body, static_cast<uint32_t>(slot));
     put_u32(body, static_cast<uint32_t>(serial & 0xFFFFFFFFu));
     put_u32(body, static_cast<uint32_t>((serial >> 32) & 0xFFFFFFFFu));
+    if (captured_us == 0) {
+        captured_us = external_frame_clock_us();
+    }
+    put_u32(body, static_cast<uint32_t>(captured_us & 0xFFFFFFFFu));
+    put_u32(body, static_cast<uint32_t>((captured_us >> 32) & 0xFFFFFFFFu));
     std::vector<uint8_t> message;
     frame_message(ExternalControl::Frame, body, message);
     if (!write_best_effort(fd_, message.data(), message.size())) {
@@ -1121,6 +1171,10 @@ bool ExternalFrameLink::poll(std::string* error) {
     return false;
 }
 bool ExternalFrameLink::take_frame(ScreenId, ExternalFrame&) { return false; }
+bool ExternalFrameLink::wait_for_message(int) const { return false; }
+ExternalFrameLink::FrameCounts ExternalFrameLink::take_frame_counts(ScreenId) {
+    return FrameCounts();
+}
 void ExternalFrameLink::take_audio(ScreenId, std::vector<int16_t>& out) { out.clear(); }
 void ExternalFrameLink::request_reset() {}
 void ExternalFrameLink::send_input(const ExternalInput&) {}
@@ -1144,7 +1198,7 @@ bool ExternalFrameProducer::connect(const std::string&, const ExternalStreamInfo
     return false;
 }
 bool ExternalFrameProducer::publish(ScreenId, uint64_t, const uint32_t*, int, int, int,
-                                    std::string*) {
+                                    std::string*, uint64_t) {
     return false;
 }
 bool ExternalFrameProducer::send_audio(ScreenId, const int16_t*, std::size_t, std::string*) {
@@ -1160,3 +1214,15 @@ bool ExternalFrameProducer::poll(bool& out_reset_requested, std::string*) {
 }  // namespace ds
 
 #endif
+
+namespace ds {
+
+uint64_t external_frame_clock_us() {
+    // steady_clock is CLOCK_MONOTONIC wherever the link exists, which every
+    // process on the machine reads alike.
+    return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
+                                     std::chrono::steady_clock::now().time_since_epoch())
+                                     .count());
+}
+
+}  // namespace ds
