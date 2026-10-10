@@ -564,11 +564,30 @@ namespace snd_core
 		constexpr static auto kWaitDurationMinimum = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::microseconds(1700));
 
 		// if we haven't buffered any blocks, we will wait less time than usual
+		//
+		// Only a device that is being fed counts. With a Dualscreen shell, a
+		// screen's sound can go over the link instead, or nowhere at all when
+		// nobody is showing that screen (see AIInitDMA/AIInitDRCDMA), and then
+		// its own device stays empty for good. Counted anyway, it asked for
+		// more on every pass, the updates ran at 2.9ms instead of 3ms, and the
+		// sound was made 3.4% faster than it played: the device that is being
+		// fed filled to kBlockCount, about a quarter of a second behind the
+		// picture, and then dropped a block every third of a second to stay
+		// there. With no device fed, the plain 3ms wait keeps time instead.
+		// Without a session both are fed, exactly as before.
+		const auto fed_and_short = [](const AudioAPIPtr& device, ds::ScreenId screen) {
+			if (!device)
+				return false;
+			DualscreenSession& session = DualscreenSession::instance();
+			if (session.ShouldCapture(screen) || !session.ShouldPlayLocally(screen))
+				return false;
+			return device->NeedAdditionalBlocks();
+		};
 		bool additional_blocks_required = false;
 		{
 			const std::shared_lock lock(g_audioMutex, std::try_to_lock);
 			if (lock)
-				additional_blocks_required = (g_tvAudio && g_tvAudio->NeedAdditionalBlocks()) || (g_padAudio && g_padAudio->NeedAdditionalBlocks());
+				additional_blocks_required = fed_and_short(g_tvAudio, ds::ScreenId::Top) || fed_and_short(g_padAudio, ds::ScreenId::Bottom);
 		}
 
 		const auto wait_duration = additional_blocks_required ? kWaitDurationFast : kWaitDuration;
