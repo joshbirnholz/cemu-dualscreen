@@ -1,0 +1,96 @@
+# Builds this fork for Linux on every push to the Dualscreen branch and
+# publishes it as one rolling pre-release, "nightly": Cemu-dualscreen-x86_64.AppImage,
+# always at the same address, for Dualscreen to run Wii U games with and to
+# update itself from. The upstream workflows (build.yml and the rest) are left
+# as they are and still run on main.
+#
+# The same build as upstream's Linux one -- Ubuntu 22.04, clang 15, vcpkg with
+# its binary cache in GitHub Packages -- for x64 only, since every device that
+# runs Wii U games for Dualscreen is a PC or a Steam Deck.
+
+name: Dualscreen nightly
+
+on:
+  push:
+    branches: [claude/dualscreen-frame-link]
+    paths-ignore:
+      - '*.md'
+  workflow_dispatch:
+
+# One at a time; a push during a build waits rather than cancelling it.
+concurrency:
+  group: dualscreen-nightly
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  packages: write
+
+env:
+  VCPKG_ROOT: "${{ github.workspace }}/dependencies/vcpkg"
+  VCPKG_BINARY_SOURCES: 'clear;nuget,GitHub,readwrite'
+  VCPKG_FORCE_DOWNLOADED_BINARIES: true
+
+jobs:
+  build:
+    name: Linux x64
+    runs-on: ubuntu-22.04
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        submodules: recursive
+        fetch-depth: 0
+
+    - name: System dependencies
+      run: |
+        sudo apt update -qq
+        sudo apt install -y clang-15 cmake freeglut3-dev libgcrypt20-dev libglm-dev libgtk-3-dev libpulse-dev libsecret-1-dev libsystemd-dev libudev-dev nasm ninja-build libbluetooth-dev appstream
+
+    - name: Bootstrap vcpkg
+      run: bash ./dependencies/vcpkg/bootstrap-vcpkg.sh
+
+    - name: vcpkg's binary cache
+      shell: bash
+      run: |
+        mono `./dependencies/vcpkg/vcpkg fetch nuget | tail -n 1` \
+          sources add \
+          -source "https://nuget.pkg.github.com/${{ github.repository_owner }}/index.json" \
+          -storepasswordincleartext \
+          -name "GitHub" \
+          -username "${{ github.repository_owner }}" \
+          -password "${{ secrets.GITHUB_TOKEN }}"
+        mono `./dependencies/vcpkg/vcpkg fetch nuget | tail -n 1` \
+          setapikey "${{ secrets.GITHUB_TOKEN }}" \
+          -source "https://nuget.pkg.github.com/${{ github.repository_owner }}/index.json"
+
+    - name: Configure
+      run: |
+        cmake -S . -B build -DCMAKE_BUILD_TYPE=release \
+          -DCMAKE_C_COMPILER=/usr/bin/clang-15 -DCMAKE_CXX_COMPILER=/usr/bin/clang++-15 \
+          -G Ninja -DCMAKE_MAKE_PROGRAM=/usr/bin/ninja
+
+    - name: Build
+      run: cmake --build build
+
+    - name: AppImage
+      run: |
+        mv bin/Cemu_release bin/Cemu
+        export LD_LIBRARY_PATH="/usr/local/lib:$LD_LIBRARY_PATH"
+        export DEPLOY_GTK_VERSION=3
+        dist/linux/appimage.sh ${{ runner.arch }}
+        mv artifacts/Cemu-*.AppImage Cemu-dualscreen-x86_64.AppImage
+
+    - name: Replace the nightly release
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        short="${GITHUB_SHA::7}"
+        cat > version.json <<EOF
+        {"build": ${{ github.run_number }}, "commit": "${GITHUB_SHA}", "branch": "${GITHUB_REF_NAME}", "built": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"}
+        EOF
+        printf 'Build %s, from %s on %s.\n\n`Cemu-dualscreen-x86_64.AppImage` -- for Dualscreen'"'"'s Wii U games. Make it executable and point `wii_u_program` at it, or let Dualscreen fetch and update it.\n' \
+          "${{ github.run_number }}" "$short" "$GITHUB_REF_NAME" > notes.md
+        gh release delete nightly --yes --cleanup-tag -R "$GITHUB_REPOSITORY" || true
+        gh release create nightly Cemu-dualscreen-x86_64.AppImage version.json -R "$GITHUB_REPOSITORY" \
+          --prerelease --target "$GITHUB_SHA" \
+          --title "Dualscreen nightly build ${{ github.run_number }}" --notes-file notes.md
