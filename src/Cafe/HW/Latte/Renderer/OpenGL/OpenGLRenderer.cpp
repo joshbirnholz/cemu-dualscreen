@@ -211,6 +211,20 @@ ImTextureID OpenGLRenderer::GenerateTexture(const std::vector<uint8>& data, cons
 	return (ImTextureID)(uintptr_t)textureId;
 }
 
+ImTextureID OpenGLRenderer::GenerateTextureRGBA(const std::vector<uint8>& rgba, const Vector2i& size)
+{
+	GLuint textureId;
+	glGenTextures(1, &textureId);
+	glBindTexture(GL_TEXTURE_2D, textureId);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+	glActiveTexture(GL_TEXTURE0);
+	glTexImage2D(GL_TEXTURE_2D, 0, GL_SRGB8_ALPHA8, size.x, size.y, 0, GL_RGBA, GL_UNSIGNED_BYTE, rgba.data());
+	return (ImTextureID)(uintptr_t)textureId;
+}
+
 void OpenGLRenderer::DeleteTexture(ImTextureID id)
 {
 	if (id)

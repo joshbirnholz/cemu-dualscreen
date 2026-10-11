@@ -99,6 +99,9 @@ public:
 	virtual void ImguiEnd() = 0;
 	virtual ImTextureID GenerateTexture(const std::vector<uint8>& data, const Vector2i& size) = 0;
 	virtual void DeleteTexture(ImTextureID id) = 0;
+	// The same from RGBA8 with straight alpha, for a picture that is only
+	// partly opaque -- Dualscreen's menu over the game.
+	virtual ImTextureID GenerateTextureRGBA(const std::vector<uint8>& rgba, const Vector2i& size) = 0;
 	virtual void DeleteFontTextures() = 0;
 
 	GfxVendor GetVendor() const { return m_vendor; }

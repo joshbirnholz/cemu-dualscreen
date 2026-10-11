@@ -49,7 +49,16 @@ struct ExternalStreamInfo {
     // How fast the producer intends to run, for pacing. Zero means it does not
     // know, and the console's own rate is assumed.
     double frames_per_second = 0.0;
+    // What else the producer can do -- kExternalFeature* bits. A trailing
+    // word in the Hello, so a consumer that predates it reads none.
+    uint32_t features = 0;
 };
+
+// The producer can draw an overlay the consumer hands it over its own window,
+// and says when its own menu key is pressed: ExternalControl::Overlay and
+// ExternalControl::MenuKey. A Wii U's Cemu, so this app's quick menu appears
+// over the game in Cemu's window rather than behind it in this one.
+inline constexpr uint32_t kExternalFeatureOverlay = 1u;
 
 // Microseconds on a clock both ends of the link read the same: the system's
 // monotonic clock, which on one machine is one clock whichever process asks.
@@ -107,6 +116,14 @@ enum class ExternalControl : uint8_t {
     // producer -> consumer, "Player N's motor is on/off", on the edges like
     // Rumble.
     PlayerRumble = 10,
+    // consumer -> producer, "draw overlay slot N (serial X) over your window",
+    // or "draw nothing" -- see ExternalOverlayArea. Only to a producer whose
+    // Hello said kExternalFeatureOverlay.
+    Overlay = 11,
+    // producer -> consumer, "the player pressed the menu key in my window" --
+    // Tab or F1, the keys that open this app's own menu. Its window is the one
+    // with the keyboard while a game plays in it, so only it can hear them.
+    MenuKey = 12,
 };
 
 // How many players the link carries besides the GamePad, which is not one of
@@ -293,6 +310,40 @@ struct ExternalSharedHeader {
     static int screen_index(ScreenId screen) { return screen == ScreenId::Top ? 0 : 1; }
 };
 
+// The overlay: pictures going the other way, from this app to the producer, to
+// be drawn over the producer's own window -- this app's quick menu over a Wii U
+// game in Cemu's window. After everything ExternalSharedHeader lays out, so a
+// producer built before it maps exactly what it always mapped and never sees
+// it; one built after checks the memory is big enough before reading it, so
+// an older consumer's smaller memory is simply an overlay it does not offer.
+//
+// Two slots, written by the consumer under the same odd/even sequence the
+// frames use, so the producer copying one while the next is written into the
+// other never tears. The pixels are RGBA8 in memory order with straight
+// (unpremultiplied) alpha, tightly packed: what an OpenGL readback gives and
+// what an ImGui texture takes.
+struct ExternalOverlayArea {
+    static constexpr int kSlots = 2;
+    // A menu, not a game: drawn at the consumer's own display size up to
+    // this, and scaled to the producer's window.
+    static constexpr int kMaxWidth = 1920;
+    static constexpr int kMaxHeight = 1080;
+
+    ExternalSlotState slots[kSlots];
+
+    static std::size_t offset() { return ExternalSharedHeader::total_bytes(); }
+    static std::size_t slot_bytes() { return static_cast<std::size_t>(kMaxWidth) * kMaxHeight * 4; }
+    static std::size_t pixels_offset() {
+        constexpr std::size_t kPage = 4096;
+        return offset() + ((sizeof(ExternalOverlayArea) + kPage - 1) / kPage) * kPage;
+    }
+    static std::size_t slot_offset(int slot) {
+        return pixels_offset() + slot_bytes() * static_cast<std::size_t>(slot);
+    }
+    // The whole of the memory once the overlay is in it.
+    static std::size_t end() { return pixels_offset() + slot_bytes() * kSlots; }
+};
+
 // The consumer: this app, waiting for something to play.
 class ExternalFrameLink {
 public:
@@ -397,6 +448,18 @@ public:
     // undo that. False until a producer has said anything at all.
     bool take_rumble(bool& out_active);
 
+    // Whether the producer draws what publish_overlay() hands it -- see
+    // kExternalFeatureOverlay.
+    bool overlay_supported() const { return connected() && (info_.features & kExternalFeatureOverlay) != 0u; }
+    // Hands the producer a picture to draw over its own window: `rgba`, RGBA8
+    // with straight alpha, `width` x `height` (no bigger than
+    // ExternalOverlayArea's maximum). Shown until hide_overlay() or the next
+    // publish. False when the producer cannot draw one.
+    bool publish_overlay(const uint8_t* rgba, int width, int height);
+    void hide_overlay();
+    // Whether the producer's menu key was pressed since the last call.
+    bool take_menu_key();
+
     // One player's pad, the same way send_input() sends the GamePad's -- only
     // what changed, never blocking. `connected` false means nothing is
     // feeding this player any more, which a producer should show as the
@@ -463,6 +526,20 @@ private:
     bool sent_player_connected_[kExternalPlayers] = {};
     bool have_sent_player_[kExternalPlayers] = {};
     std::vector<std::pair<int, bool>> player_rumble_;
+    // Where the next overlay goes, its serial, and whether one is up.
+    int next_overlay_slot_ = 0;
+    int overlay_slot_ = -1;
+    uint64_t overlay_serial_ = 0;
+    bool overlay_shown_ = false;
+    // Whether the producer has yet to hear the latest of those: an Overlay
+    // message that found the socket full, tried again by the next poll().
+    bool overlay_unsent_ = false;
+    bool menu_key_ = false;
+    void send_overlay_state();
+    ExternalOverlayArea* overlay_area() {
+        return reinterpret_cast<ExternalOverlayArea*>(static_cast<uint8_t*>(memory_) +
+                                                      ExternalOverlayArea::offset());
+    }
 };
 
 // The producer: whatever is actually playing the game. Here so that the fork of
@@ -548,13 +625,32 @@ public:
     // request_screen(), whose `shown` this is.
     std::optional<ScreenId> shown_screen() const { return shown_screen_; }
 
+    // Tells the consumer its menu key was pressed in this producer's window.
+    void send_menu_key();
+    // Whether the consumer wants an overlay drawn, as of the last poll(), and
+    // whether this end can at all: the consumer's memory has room for one.
+    bool overlay_available() const { return memory_bytes_ >= ExternalOverlayArea::end(); }
+    bool overlay_visible() const { return overlay_visible_; }
+    // The overlay's pixels, when they have changed since the last call:
+    // RGBA8, straight alpha, `width` x `height`. False when nothing new has
+    // arrived, or what arrived was being rewritten as it was read -- the next
+    // poll() brings the newer one.
+    bool take_overlay(std::vector<uint8_t>& rgba, int& width, int& height);
+
 private:
     ExternalSharedHeader* header() { return static_cast<ExternalSharedHeader*>(memory_); }
 
     int fd_ = -1;
     int memory_fd_ = -1;
     void* memory_ = nullptr;
+    // How much of it is mapped: ExternalSharedHeader's, and the overlay's
+    // after it when the consumer made room for one.
+    std::size_t memory_bytes_ = 0;
     int next_slot_[2] = {0, 0};
+    bool overlay_visible_ = false;
+    int overlay_slot_ = -1;
+    uint64_t overlay_serial_ = 0;
+    uint64_t overlay_taken_serial_ = 0;
     std::vector<uint8_t> inbox_;
     ExternalInput input_;
     bool have_input_ = false;

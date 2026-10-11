@@ -152,6 +152,17 @@ public:
 	int PadWidth();
 	int PadHeight();
 
+	// Dualscreen's quick menu, drawn over this window's game while it is up
+	// -- see ds::ExternalFrameProducer::take_overlay(). OverlayVisible() is
+	// lock-free, for the render thread to ask every frame; TakeOverlay()
+	// hands over the pixels (RGBA8, straight alpha) when they have changed
+	// since it last did.
+	bool OverlayVisible() const { return m_overlayVisibleAtomic.load(std::memory_order_relaxed); }
+	bool TakeOverlay(std::vector<uint8_t>& rgba, int& width, int& height);
+	// F1 in this window: Dualscreen opens or closes its menu, as it would for
+	// F1 pressed in its own. Not Tab, which Cemu holds to show the GamePad.
+	void SendMenuKey();
+
 private:
 	// Every method that reaches m_producer takes this, exclusively -- see the
 	// class comment for why a shared_mutex is not safe here.
@@ -218,4 +229,12 @@ private:
 	// time this mattered in practice.
 	bool m_reportedPublishFailure[2] = {false, false};
 	bool m_reportedAudioFailure = false;
+
+	// The overlay as Poll() last took it, waiting for the renderer.
+	std::atomic<bool> m_overlayVisibleAtomic{false};
+	std::mutex m_overlayMutex;
+	std::vector<uint8_t> m_overlayPixels;
+	int m_overlayWidth = 0;
+	int m_overlayHeight = 0;
+	bool m_overlayFresh = false;
 };

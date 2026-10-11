@@ -11,8 +11,12 @@
 #include <poll.h>
 #include <sys/mman.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <sys/un.h>
 #include <unistd.h>
+#if defined(__ANDROID__)
+#include <sys/syscall.h>
+#endif
 
 namespace ds {
 namespace {
@@ -351,12 +355,19 @@ bool ExternalFrameLink::listen(const std::string& socket_path, std::string* erro
     close();
     socket_path_ = socket_path;
 
+#if defined(__ANDROID__) && __ANDROID_API__ < 30
+    // Bionic only wraps it from Android 11; the kernel has had it far longer.
+    memory_fd_ = static_cast<int>(::syscall(__NR_memfd_create, "dualscreen-frames", MFD_CLOEXEC));
+#else
     memory_fd_ = ::memfd_create("dualscreen-frames", MFD_CLOEXEC);
+#endif
     if (memory_fd_ < 0) {
         if (error != nullptr) *error = std::string("no shared memory: ") + std::strerror(errno);
         return false;
     }
-    const std::size_t bytes = ExternalSharedHeader::total_bytes();
+    // Room for the overlay after the frames: see ExternalOverlayArea. Never
+    // touched by a producer that cannot draw one, so it costs nothing there.
+    const std::size_t bytes = ExternalOverlayArea::end();
     if (::ftruncate(memory_fd_, static_cast<off_t>(bytes)) != 0) {
         if (error != nullptr) {
             *error = std::string("could not size the shared memory: ") + std::strerror(errno);
@@ -376,6 +387,7 @@ bool ExternalFrameLink::listen(const std::string& socket_path, std::string* erro
     // Placement-new rather than memset: the atomics in here have to be
     // constructed, and a zeroed buffer is only accidentally a valid one.
     new (memory_) ExternalSharedHeader();
+    new (overlay_area()) ExternalOverlayArea();
     header()->magic.store(ExternalSharedHeader::kMagic, std::memory_order_relaxed);
     header()->version.store(ExternalSharedHeader::kVersion, std::memory_order_release);
 
@@ -412,7 +424,7 @@ void ExternalFrameLink::close() {
         listen_fd_ = -1;
     }
     if (memory_ != nullptr) {
-        ::munmap(memory_, ExternalSharedHeader::total_bytes());
+        ::munmap(memory_, ExternalOverlayArea::end());
         memory_ = nullptr;
     }
     if (memory_fd_ >= 0) {
@@ -451,6 +463,12 @@ void ExternalFrameLink::close() {
         have_sent_player_[player] = false;
     }
     player_rumble_.clear();
+    // An overlay is shown by one producer; the next starts with none.
+    next_overlay_slot_ = 0;
+    overlay_slot_ = -1;
+    overlay_shown_ = false;
+    overlay_unsent_ = false;
+    menu_key_ = false;
 }
 
 bool ExternalFrameLink::accept_peer(std::string* error) {
@@ -468,6 +486,11 @@ bool ExternalFrameLink::accept_peer(std::string* error) {
     sent_screen_.reset();
     sent_max_width_ = -1;
     sent_max_height_ = -1;
+    next_overlay_slot_ = 0;
+    overlay_slot_ = -1;
+    overlay_shown_ = false;
+    overlay_unsent_ = false;
+    menu_key_ = false;
     // The memory goes over first, before anything is said about it, so a
     // producer never has to handle a frame announcement for memory it cannot
     // see yet.
@@ -488,7 +511,11 @@ bool ExternalFrameLink::poll(std::string* error) {
     if (peer_fd_ < 0) {
         return accept_peer(error);
     }
-    return read_messages(error);
+    if (!read_messages(error)) {
+        return false;
+    }
+    send_overlay_state();
+    return true;
 }
 
 bool ExternalFrameLink::read_messages(std::string* error) {
@@ -527,6 +554,8 @@ bool ExternalFrameLink::handle_message(ExternalControl kind, const std::vector<u
             info_.bottom_height = static_cast<int>(read_u32(body.data() + 12));
             info_.audio_sample_rate = static_cast<int>(read_u32(body.data() + 16));
             info_.frames_per_second = static_cast<double>(read_u32(body.data() + 20)) / 1000.0;
+            // A trailing word a producer built before it does not send.
+            info_.features = body.size() >= 28 ? read_u32(body.data() + 24) : 0u;
             const bool sane = info_.top_width > 0 && info_.top_height > 0 &&
                               info_.bottom_width > 0 && info_.bottom_height > 0 &&
                               info_.top_width <= ExternalSharedHeader::kMaxWidth &&
@@ -620,6 +649,9 @@ bool ExternalFrameLink::handle_message(ExternalControl kind, const std::vector<u
             }
             return true;
         }
+        case ExternalControl::MenuKey:
+            menu_key_ = true;
+            return true;
         case ExternalControl::Shutdown:
             if (error != nullptr) *error = "the game closed";
             return false;
@@ -627,6 +659,7 @@ bool ExternalFrameLink::handle_message(ExternalControl kind, const std::vector<u
         case ExternalControl::Input:
         case ExternalControl::PlayerInput:
         case ExternalControl::RequestScreen:
+        case ExternalControl::Overlay:
             // Ours to send, not to receive.
             return true;
     }
@@ -760,6 +793,71 @@ bool ExternalFrameLink::send_control_best_effort(ExternalControl kind,
 
 void ExternalFrameLink::request_reset() { send_control(ExternalControl::Reset, {}); }
 
+bool ExternalFrameLink::publish_overlay(const uint8_t* rgba, int width, int height) {
+    if (!overlay_supported() || memory_ == nullptr || rgba == nullptr || width <= 0 ||
+        height <= 0 || width > ExternalOverlayArea::kMaxWidth ||
+        height > ExternalOverlayArea::kMaxHeight) {
+        return false;
+    }
+    // Never the slot last announced, which the producer may be copying now.
+    const int slot = next_overlay_slot_;
+    next_overlay_slot_ = (slot + 1) % ExternalOverlayArea::kSlots;
+
+    ExternalSlotState& state = overlay_area()->slots[slot];
+    const uint64_t sequence = state.sequence.load(std::memory_order_relaxed);
+    state.sequence.store(sequence + 1, std::memory_order_release);
+    std::memcpy(static_cast<uint8_t*>(memory_) + ExternalOverlayArea::slot_offset(slot), rgba,
+                static_cast<std::size_t>(width) * height * 4);
+    ++overlay_serial_;
+    state.width.store(static_cast<uint32_t>(width), std::memory_order_relaxed);
+    state.height.store(static_cast<uint32_t>(height), std::memory_order_relaxed);
+    state.serial.store(overlay_serial_, std::memory_order_relaxed);
+    state.sequence.store(sequence + 2, std::memory_order_release);
+
+    overlay_slot_ = slot;
+    overlay_shown_ = true;
+    overlay_unsent_ = true;
+    send_overlay_state();
+    return true;
+}
+
+void ExternalFrameLink::hide_overlay() {
+    if (!overlay_shown_) {
+        return;
+    }
+    overlay_shown_ = false;
+    overlay_unsent_ = true;
+    send_overlay_state();
+}
+
+// Never blocks, like send_input(), and for its reason; only the newest state
+// matters, so one that could not go is simply tried again by the next poll().
+void ExternalFrameLink::send_overlay_state() {
+    if (!overlay_unsent_) {
+        return;
+    }
+    if (!overlay_supported()) {
+        overlay_unsent_ = false;
+        return;
+    }
+    std::vector<uint8_t> body;
+    body.push_back(overlay_shown_ ? 1u : 0u);
+    body.push_back(static_cast<uint8_t>(std::max(0, overlay_slot_)));
+    put_u32(body, static_cast<uint32_t>(overlay_serial_ & 0xFFFFFFFFu));
+    put_u32(body, static_cast<uint32_t>((overlay_serial_ >> 32) & 0xFFFFFFFFu));
+    bool sent = false;
+    send_control_best_effort(ExternalControl::Overlay, body, sent);
+    if (sent) {
+        overlay_unsent_ = false;
+    }
+}
+
+bool ExternalFrameLink::take_menu_key() {
+    const bool pressed = menu_key_;
+    menu_key_ = false;
+    return pressed;
+}
+
 void ExternalFrameLink::send_input(const ExternalInput& input) {
     // Only when it changed. A pad that is not being touched is the common case
     // and it would otherwise cost a message every frame for nothing.
@@ -881,8 +979,13 @@ bool ExternalFrameProducer::connect(const std::string& socket_path,
         close();
         return false;
     }
-    memory_ = ::mmap(nullptr, ExternalSharedHeader::total_bytes(), PROT_READ | PROT_WRITE,
-                     MAP_SHARED, memory_fd_, 0);
+    // The overlay too when the consumer made room for it -- an older one's
+    // memory ends with the frames, and is mapped exactly as it always was.
+    struct stat described {};
+    const bool roomy = ::fstat(memory_fd_, &described) == 0 && described.st_size > 0 &&
+                       static_cast<std::size_t>(described.st_size) >= ExternalOverlayArea::end();
+    memory_bytes_ = roomy ? ExternalOverlayArea::end() : ExternalSharedHeader::total_bytes();
+    memory_ = ::mmap(nullptr, memory_bytes_, PROT_READ | PROT_WRITE, MAP_SHARED, memory_fd_, 0);
     if (memory_ == MAP_FAILED) {
         memory_ = nullptr;
         if (error != nullptr) {
@@ -905,6 +1008,10 @@ bool ExternalFrameProducer::connect(const std::string& socket_path,
     put_u32(body, static_cast<uint32_t>(info.bottom_height));
     put_u32(body, static_cast<uint32_t>(info.audio_sample_rate));
     put_u32(body, static_cast<uint32_t>(info.frames_per_second * 1000.0 + 0.5));
+    // An overlay is only offered when there is memory to carry it.
+    const uint32_t features =
+        overlay_available() ? info.features : (info.features & ~kExternalFeatureOverlay);
+    put_u32(body, features);
     std::vector<uint8_t> message;
     frame_message(ExternalControl::Hello, body, message);
     if (!write_all(fd_, message.data(), message.size())) {
@@ -924,15 +1031,20 @@ void ExternalFrameProducer::close() {
         fd_ = -1;
     }
     if (memory_ != nullptr) {
-        ::munmap(memory_, ExternalSharedHeader::total_bytes());
+        ::munmap(memory_, memory_bytes_);
         memory_ = nullptr;
     }
+    memory_bytes_ = 0;
     if (memory_fd_ >= 0) {
         ::close(memory_fd_);
         memory_fd_ = -1;
     }
     next_slot_[0] = 0;
     next_slot_[1] = 0;
+    overlay_visible_ = false;
+    overlay_slot_ = -1;
+    overlay_serial_ = 0;
+    overlay_taken_serial_ = 0;
     inbox_.clear();
     // Same reason as the other end: whether a pad has ever arrived is a fact
     // about one session, and a fork reads it to decide whether to keep using
@@ -1082,6 +1194,47 @@ void ExternalFrameProducer::send_player_rumble(int player, bool active) {
     have_sent_player_rumble_[player] = true;
 }
 
+void ExternalFrameProducer::send_menu_key() {
+    if (fd_ < 0) {
+        return;
+    }
+    // A key the player pressed once, so it waits for room rather than being
+    // dropped -- briefly, and only ever on a keypress.
+    std::vector<uint8_t> message;
+    frame_message(ExternalControl::MenuKey, {}, message);
+    write_all(fd_, message.data(), message.size());
+}
+
+bool ExternalFrameProducer::take_overlay(std::vector<uint8_t>& rgba, int& width, int& height) {
+    if (memory_ == nullptr || !overlay_available() || !overlay_visible_ || overlay_slot_ < 0 ||
+        overlay_serial_ == overlay_taken_serial_) {
+        return false;
+    }
+    const auto* area = reinterpret_cast<const ExternalOverlayArea*>(
+        static_cast<const uint8_t*>(memory_) + ExternalOverlayArea::offset());
+    const ExternalSlotState& state = area->slots[overlay_slot_];
+    const uint64_t before = state.sequence.load(std::memory_order_acquire);
+    if ((before & 1u) != 0) {
+        return false;  // being written: a newer announcement is on its way
+    }
+    const int w = static_cast<int>(state.width.load(std::memory_order_relaxed));
+    const int h = static_cast<int>(state.height.load(std::memory_order_relaxed));
+    if (w <= 0 || h <= 0 || w > ExternalOverlayArea::kMaxWidth ||
+        h > ExternalOverlayArea::kMaxHeight) {
+        return false;
+    }
+    const uint8_t* source =
+        static_cast<const uint8_t*>(memory_) + ExternalOverlayArea::slot_offset(overlay_slot_);
+    rgba.assign(source, source + static_cast<std::size_t>(w) * h * 4);
+    if (state.sequence.load(std::memory_order_acquire) != before) {
+        return false;
+    }
+    overlay_taken_serial_ = overlay_serial_;
+    width = w;
+    height = h;
+    return true;
+}
+
 bool ExternalFrameProducer::poll(bool& out_reset_requested, std::string* error) {
     out_reset_requested = false;
     if (fd_ < 0) {
@@ -1140,6 +1293,14 @@ bool ExternalFrameProducer::poll(bool& out_reset_requested, std::string* error) 
                     shown_screen_.reset();
                 }
             }
+        } else if (kind == ExternalControl::Overlay) {
+            if (body.size() >= 10 && overlay_available() &&
+                body[1] < ExternalOverlayArea::kSlots) {
+                overlay_visible_ = body[0] != 0u;
+                overlay_slot_ = body[1];
+                overlay_serial_ = static_cast<uint64_t>(read_u32(body.data() + 2)) |
+                                  (static_cast<uint64_t>(read_u32(body.data() + 6)) << 32);
+            }
         } else if (kind == ExternalControl::Shutdown) {
             if (error != nullptr) *error = "the far end ended the session";
             return false;
@@ -1189,6 +1350,10 @@ bool ExternalFrameLink::handle_message(ExternalControl, const std::vector<uint8_
     return false;
 }
 bool ExternalFrameLink::send_control(ExternalControl, const std::vector<uint8_t>&) { return false; }
+bool ExternalFrameLink::publish_overlay(const uint8_t*, int, int) { return false; }
+void ExternalFrameLink::hide_overlay() {}
+void ExternalFrameLink::send_overlay_state() {}
+bool ExternalFrameLink::take_menu_key() { return false; }
 
 ExternalFrameProducer::~ExternalFrameProducer() = default;
 void ExternalFrameProducer::close() {}
@@ -1206,6 +1371,8 @@ bool ExternalFrameProducer::send_audio(ScreenId, const int16_t*, std::size_t, st
 }
 void ExternalFrameProducer::send_rumble(bool) {}
 void ExternalFrameProducer::send_player_rumble(int, bool) {}
+void ExternalFrameProducer::send_menu_key() {}
+bool ExternalFrameProducer::take_overlay(std::vector<uint8_t>&, int&, int&) { return false; }
 bool ExternalFrameProducer::poll(bool& out_reset_requested, std::string*) {
     out_reset_requested = false;
     return false;

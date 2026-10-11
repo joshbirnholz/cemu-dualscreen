@@ -62,6 +62,7 @@
 #include "Cafe/OS/libs/swkbd/swkbd.h"
 
 #include "Cafe/HW/Latte/Renderer/Renderer.h" // For renderer API checks
+#include "DualscreenSession.h"
 
 extern WindowSystem::WindowInfo g_window_info;
 extern std::shared_mutex g_mutex;
@@ -1465,6 +1466,14 @@ void MainWindow::OnKeyUp(wxKeyEvent& event)
 
 	if (swkbd_hasKeyboardInputHook())
 		return;
+
+	// Dualscreen's menu key, when a Dualscreen is attached -- see
+	// DualscreenSession::SendMenuKey(). F1, because Cemu holds Tab itself.
+	if (event.GetKeyCode() == WXK_F1 && !event.HasAnyModifiers() && DualscreenSession::instance().IsRunning())
+	{
+		DualscreenSession::instance().SendMenuKey();
+		return;
+	}
 
 	HotkeySettings::CaptureInput(event);
 }

@@ -2108,6 +2108,19 @@ ImTextureID VulkanRenderer::GenerateTexture(const std::vector<uint8>& data, cons
 	}
 }
 
+ImTextureID VulkanRenderer::GenerateTextureRGBA(const std::vector<uint8>& rgba, const Vector2i& size)
+{
+	try
+	{
+		return (ImTextureID)ImGui_ImplVulkan_GenerateTexture(m_state.currentCommandBuffer, rgba, size);
+	}
+	catch (const std::exception& ex)
+	{
+		cemuLog_log(LogType::Force, "can't generate imgui texture: {}", ex.what());
+		return nullptr;
+	}
+}
+
 void VulkanRenderer::DeleteTexture(ImTextureID id)
 {
 	WaitDeviceIdle();

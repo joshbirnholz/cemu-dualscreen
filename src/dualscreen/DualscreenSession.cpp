@@ -84,6 +84,8 @@ void DualscreenSession::Start(int tvWidth, int tvHeight, int padWidth, int padHe
 	info.bottom_height = padHeight;
 	info.audio_sample_rate = 48000;
 	info.frames_per_second = framesPerSecond;
+	// Dualscreen's menu can be drawn over this window -- see TakeOverlay().
+	info.features = ds::kExternalFeatureOverlay;
 
 	std::string error;
 	if (!m_producer.connect(s_socketPath, info, &error))
@@ -125,6 +127,7 @@ void DualscreenSession::Stop()
 	if (!m_running)
 		return;
 	m_producer.close();
+	m_overlayVisibleAtomic.store(false, std::memory_order_relaxed);
 	m_running = false;
 	m_requestedScreen.reset();
 	m_runningAtomic.store(false, std::memory_order_relaxed);
@@ -173,7 +176,25 @@ void DualscreenSession::Poll()
 		m_requestedScreenAtomic.store(-1, std::memory_order_relaxed);
 	m_requestedMaxWidthAtomic.store(0, std::memory_order_relaxed);
 	m_requestedMaxHeightAtomic.store(0, std::memory_order_relaxed);
+		m_overlayVisibleAtomic.store(false, std::memory_order_relaxed);
 		return;
+	}
+	// Dualscreen's menu, when it is up: copied out of shared memory here,
+	// under m_mutex like everything else that reaches m_producer, and kept
+	// for the renderer to pick up.
+	{
+		std::vector<uint8_t> pixels;
+		int width = 0;
+		int height = 0;
+		if (m_producer.take_overlay(pixels, width, height))
+		{
+			std::scoped_lock overlay(m_overlayMutex);
+			m_overlayPixels.swap(pixels);
+			m_overlayWidth = width;
+			m_overlayHeight = height;
+			m_overlayFresh = true;
+		}
+		m_overlayVisibleAtomic.store(m_producer.overlay_visible(), std::memory_order_relaxed);
 	}
 	// Whichever screen the shell asked for -- absent if it has asked for
 	// nothing, which is also true of a shell that has not connected past the
@@ -481,4 +502,25 @@ int DualscreenSession::PadHeight()
 {
 	std::scoped_lock lock(m_mutex);
 	return m_padHeight;
+}
+
+bool DualscreenSession::TakeOverlay(std::vector<uint8_t>& rgba, int& width, int& height)
+{
+	std::scoped_lock overlay(m_overlayMutex);
+	if (!m_overlayFresh)
+		return false;
+	rgba.swap(m_overlayPixels);
+	width = m_overlayWidth;
+	height = m_overlayHeight;
+	m_overlayFresh = false;
+	return true;
+}
+
+void DualscreenSession::SendMenuKey()
+{
+	std::scoped_lock lock(m_mutex);
+	if (!m_running)
+		return;
+	m_producer.send_menu_key();
+	cemuLog_log(LogType::Force, "Dualscreen: F1 pressed; asking for the menu");
 }
