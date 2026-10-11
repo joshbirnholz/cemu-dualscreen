@@ -17,6 +17,7 @@
 #endif
 
 #include "wxgui/helpers/wxControlObject.h"
+#include "DualscreenSession.h"
 
 void wxAutosizeColumn(wxListCtrlBase* ctrl, int col)
 {
@@ -108,7 +109,12 @@ namespace
 	gboolean OnFullscreenCursorTick(gpointer user_data)
 	{
 		auto* state = static_cast<FullscreenCursor*>(user_data);
-		const bool hide = FillsItsDisplay(state->window);
+		// Dualscreen's Pointer setting decides, when one is attached: shown,
+		// the pointer comes and goes with the mouse as Cemu's own timer has
+		// it, even over the whole display; hidden, it never shows. Without
+		// one, it is hidden wherever the game fills the display.
+		const int setting = DualscreenSession::instance().PointerSetting();
+		const bool hide = setting >= 0 ? setting == 0 : FillsItsDisplay(state->window);
 		if (hide != state->hidden)
 		{
 			state->hidden = hide;

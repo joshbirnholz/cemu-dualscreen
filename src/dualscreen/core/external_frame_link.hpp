@@ -124,6 +124,10 @@ enum class ExternalControl : uint8_t {
     // Tab or F1, the keys that open this app's own menu. Its window is the one
     // with the keyboard while a game plays in it, so only it can hear them.
     MenuKey = 12,
+    // consumer -> producer, "show the mouse pointer over your window, or
+    // never do" -- this app's Pointer setting. A producer that predates it
+    // ignores it and goes on as it was.
+    Pointer = 13,
 };
 
 // How many players the link carries besides the GamePad, which is not one of
@@ -459,6 +463,9 @@ public:
     void hide_overlay();
     // Whether the producer's menu key was pressed since the last call.
     bool take_menu_key();
+    // This app's Pointer setting, for the producer's own window -- see
+    // ExternalControl::Pointer. Only a change is put on the wire.
+    void set_pointer_shown(bool shown);
 
     // One player's pad, the same way send_input() sends the GamePad's -- only
     // what changed, never blocking. `connected` false means nothing is
@@ -536,6 +543,8 @@ private:
     bool overlay_unsent_ = false;
     bool menu_key_ = false;
     void send_overlay_state();
+    // The Pointer setting as last delivered; absent until one has been.
+    std::optional<bool> sent_pointer_shown_;
     ExternalOverlayArea* overlay_area() {
         return reinterpret_cast<ExternalOverlayArea*>(static_cast<uint8_t*>(memory_) +
                                                       ExternalOverlayArea::offset());
@@ -636,6 +645,9 @@ public:
     // arrived, or what arrived was being rewritten as it was read -- the next
     // poll() brings the newer one.
     bool take_overlay(std::vector<uint8_t>& rgba, int& width, int& height);
+    // Whether the consumer wants the mouse pointer shown over this window --
+    // true until it has said otherwise.
+    bool pointer_shown() const { return pointer_shown_; }
 
 private:
     ExternalSharedHeader* header() { return static_cast<ExternalSharedHeader*>(memory_); }
@@ -651,6 +663,7 @@ private:
     int overlay_slot_ = -1;
     uint64_t overlay_serial_ = 0;
     uint64_t overlay_taken_serial_ = 0;
+    bool pointer_shown_ = true;
     std::vector<uint8_t> inbox_;
     ExternalInput input_;
     bool have_input_ = false;

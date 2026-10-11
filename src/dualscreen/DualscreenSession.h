@@ -163,6 +163,17 @@ public:
 	// F1 pressed in its own. Not Tab, which Cemu holds to show the GamePad.
 	void SendMenuKey();
 
+	// Dualscreen's Pointer setting, for this window: 1 shown, 0 hidden, -1
+	// when no Dualscreen is attached to say. Only the pointer: a click still
+	// touches the GamePad's screen either way, since on a touchscreen that is
+	// how a finger arrives. Lock-free, for the UI thread's cursor timer.
+	int PointerSetting() const
+	{
+		if (!m_runningAtomic.load(std::memory_order_relaxed))
+			return -1;
+		return m_pointerShownAtomic.load(std::memory_order_relaxed) ? 1 : 0;
+	}
+
 private:
 	// Every method that reaches m_producer takes this, exclusively -- see the
 	// class comment for why a shared_mutex is not safe here.
@@ -232,6 +243,7 @@ private:
 
 	// The overlay as Poll() last took it, waiting for the renderer.
 	std::atomic<bool> m_overlayVisibleAtomic{false};
+	std::atomic<bool> m_pointerShownAtomic{true};
 	std::mutex m_overlayMutex;
 	std::vector<uint8_t> m_overlayPixels;
 	int m_overlayWidth = 0;

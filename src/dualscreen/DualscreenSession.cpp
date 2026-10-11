@@ -128,6 +128,7 @@ void DualscreenSession::Stop()
 		return;
 	m_producer.close();
 	m_overlayVisibleAtomic.store(false, std::memory_order_relaxed);
+	m_pointerShownAtomic.store(true, std::memory_order_relaxed);
 	m_running = false;
 	m_requestedScreen.reset();
 	m_runningAtomic.store(false, std::memory_order_relaxed);
@@ -177,8 +178,10 @@ void DualscreenSession::Poll()
 	m_requestedMaxWidthAtomic.store(0, std::memory_order_relaxed);
 	m_requestedMaxHeightAtomic.store(0, std::memory_order_relaxed);
 		m_overlayVisibleAtomic.store(false, std::memory_order_relaxed);
+		m_pointerShownAtomic.store(true, std::memory_order_relaxed);
 		return;
 	}
+	m_pointerShownAtomic.store(m_producer.pointer_shown(), std::memory_order_relaxed);
 	// Dualscreen's menu, when it is up: copied out of shared memory here,
 	// under m_mutex like everything else that reaches m_producer, and kept
 	// for the renderer to pick up.

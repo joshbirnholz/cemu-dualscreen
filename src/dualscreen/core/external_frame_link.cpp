@@ -469,6 +469,7 @@ void ExternalFrameLink::close() {
     overlay_shown_ = false;
     overlay_unsent_ = false;
     menu_key_ = false;
+    sent_pointer_shown_.reset();
 }
 
 bool ExternalFrameLink::accept_peer(std::string* error) {
@@ -491,6 +492,7 @@ bool ExternalFrameLink::accept_peer(std::string* error) {
     overlay_shown_ = false;
     overlay_unsent_ = false;
     menu_key_ = false;
+    sent_pointer_shown_.reset();
     // The memory goes over first, before anything is said about it, so a
     // producer never has to handle a frame announcement for memory it cannot
     // see yet.
@@ -660,6 +662,7 @@ bool ExternalFrameLink::handle_message(ExternalControl kind, const std::vector<u
         case ExternalControl::PlayerInput:
         case ExternalControl::RequestScreen:
         case ExternalControl::Overlay:
+        case ExternalControl::Pointer:
             // Ours to send, not to receive.
             return true;
     }
@@ -849,6 +852,19 @@ void ExternalFrameLink::send_overlay_state() {
     send_control_best_effort(ExternalControl::Overlay, body, sent);
     if (sent) {
         overlay_unsent_ = false;
+    }
+}
+
+void ExternalFrameLink::set_pointer_shown(bool shown) {
+    if (sent_pointer_shown_ == shown) {
+        return;
+    }
+    std::vector<uint8_t> body;
+    body.push_back(shown ? 1u : 0u);
+    bool sent = false;
+    send_control_best_effort(ExternalControl::Pointer, body, sent);
+    if (sent) {
+        sent_pointer_shown_ = shown;
     }
 }
 
@@ -1045,6 +1061,7 @@ void ExternalFrameProducer::close() {
     overlay_slot_ = -1;
     overlay_serial_ = 0;
     overlay_taken_serial_ = 0;
+    pointer_shown_ = true;
     inbox_.clear();
     // Same reason as the other end: whether a pad has ever arrived is a fact
     // about one session, and a fork reads it to decide whether to keep using
@@ -1293,6 +1310,10 @@ bool ExternalFrameProducer::poll(bool& out_reset_requested, std::string* error) 
                     shown_screen_.reset();
                 }
             }
+        } else if (kind == ExternalControl::Pointer) {
+            if (!body.empty()) {
+                pointer_shown_ = body[0] != 0u;
+            }
         } else if (kind == ExternalControl::Overlay) {
             if (body.size() >= 10 && overlay_available() &&
                 body[1] < ExternalOverlayArea::kSlots) {
@@ -1354,6 +1375,7 @@ bool ExternalFrameLink::publish_overlay(const uint8_t*, int, int) { return false
 void ExternalFrameLink::hide_overlay() {}
 void ExternalFrameLink::send_overlay_state() {}
 bool ExternalFrameLink::take_menu_key() { return false; }
+void ExternalFrameLink::set_pointer_shown(bool) {}
 
 ExternalFrameProducer::~ExternalFrameProducer() = default;
 void ExternalFrameProducer::close() {}
