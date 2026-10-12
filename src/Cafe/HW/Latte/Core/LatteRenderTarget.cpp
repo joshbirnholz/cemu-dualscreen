@@ -893,26 +893,41 @@ void LatteRenderTarget_tapDualscreen(LatteTextureView* textureView, bool screenI
 // the window at the shape Dualscreen drew it, with the dimming it has at its
 // edges carried out to the window's.
 //
-// A new picture means a new texture, and deleting the old one waits for the
-// GPU, so they are made no more often than every 50ms: plenty for a cursor
-// moving through a menu.
+// A new picture goes into a new texture, which is only drawn from two frames
+// later: the frame it is made in is the one recording its upload, and drawing
+// it there showed a frame of nothing -- the menu flashing as the cursor moved.
+// The old one stays up until then and is deleted after, which waits for the
+// GPU, so new ones are made no more often than every 50ms: plenty for a
+// cursor moving through a menu.
 static void LatteRenderTarget_drawDualscreenMenu()
 {
-	static ImTextureID s_texture = nullptr;
+	struct Picture
+	{
+		ImTextureID texture = nullptr;
+		int width = 0;
+		int height = 0;
+		uint8 edge[4] = {0, 0, 0, 0};
+	};
+	static Picture s_shown;
+	static Picture s_incoming;
+	static int s_incomingFrames = 0;
 	static std::vector<uint8> s_pixels;
 	static int s_width = 0;
 	static int s_height = 0;
 	static bool s_pending = false;
 	static std::chrono::steady_clock::time_point s_made;
 
+	auto release = [](Picture& picture) {
+		if (picture.texture)
+			g_renderer->DeleteTexture(picture.texture);
+		picture = Picture();
+	};
+
 	DualscreenSession& session = DualscreenSession::instance();
 	if (!session.OverlayVisible())
 	{
-		if (s_texture)
-		{
-			g_renderer->DeleteTexture(s_texture);
-			s_texture = nullptr;
-		}
+		release(s_incoming);
+		release(s_shown);
 		s_pending = false;
 		return;
 	}
@@ -927,27 +942,47 @@ static void LatteRenderTarget_drawDualscreenMenu()
 		s_height = height;
 		s_pending = true;
 	}
-	const auto now = std::chrono::steady_clock::now();
-	if (s_pending && (!s_texture || now - s_made >= std::chrono::milliseconds(50)))
+	if (s_incoming.texture && ++s_incomingFrames >= 2)
 	{
-		if (s_texture)
-			g_renderer->DeleteTexture(s_texture);
-		s_texture = g_renderer->GenerateTextureRGBA(s_pixels, {s_width, s_height});
+		release(s_shown);
+		s_shown = s_incoming;
+		s_incoming = Picture();
+	}
+	const auto now = std::chrono::steady_clock::now();
+	if (s_pending && !s_incoming.texture && now - s_made >= std::chrono::milliseconds(50))
+	{
+		Picture picture;
+		picture.texture = g_renderer->GenerateTextureRGBA(s_pixels, {s_width, s_height});
+		picture.width = s_width;
+		picture.height = s_height;
+		std::copy(s_pixels.begin(), s_pixels.begin() + 4, picture.edge);
 		s_made = now;
 		s_pending = false;
+		if (!s_shown.texture)
+		{
+			// Nothing up yet to keep showing meanwhile: this one is drawn
+			// from the next frame, when its upload has run.
+			s_incoming = picture;
+			s_incomingFrames = 1;
+		}
+		else
+		{
+			s_incoming = picture;
+			s_incomingFrames = 0;
+		}
 	}
-	if (!s_texture || s_width <= 0 || s_height <= 0)
+	if (!s_shown.texture || s_shown.width <= 0 || s_shown.height <= 0)
 		return;
 
 	ImDrawList* draw = ImGui::GetForegroundDrawList();
 	const ImVec2 window = ImGui::GetIO().DisplaySize;
-	const float scale = std::min(window.x / s_width, window.y / s_height);
-	const ImVec2 size(s_width * scale, s_height * scale);
+	const float scale = std::min(window.x / s_shown.width, window.y / s_shown.height);
+	const ImVec2 size(s_shown.width * scale, s_shown.height * scale);
 	const ImVec2 from((window.x - size.x) * 0.5f, (window.y - size.y) * 0.5f);
 	const ImVec2 to(from.x + size.x, from.y + size.y);
+	session.SetOverlayRect(from.x, from.y, to.x, to.y);
 	// The bars either side, dimmed as the menu's own edges are.
-	const uint8 edge = s_pixels[3];
-	const ImU32 dim = IM_COL32(s_pixels[0], s_pixels[1], s_pixels[2], edge);
+	const ImU32 dim = IM_COL32(s_shown.edge[0], s_shown.edge[1], s_shown.edge[2], s_shown.edge[3]);
 	if (from.x > 0.5f)
 	{
 		draw->AddRectFilled(ImVec2(0, 0), ImVec2(from.x, window.y), dim);
@@ -958,7 +993,7 @@ static void LatteRenderTarget_drawDualscreenMenu()
 		draw->AddRectFilled(ImVec2(0, 0), ImVec2(window.x, from.y), dim);
 		draw->AddRectFilled(ImVec2(0, to.y), window, dim);
 	}
-	draw->AddImage(s_texture, from, to);
+	draw->AddImage(s_shown.texture, from, to);
 }
 
 void LatteRenderTarget_copyToBackbuffer(LatteTextureView* textureView, bool isPadView)

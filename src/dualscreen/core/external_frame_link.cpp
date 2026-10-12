@@ -470,6 +470,7 @@ void ExternalFrameLink::close() {
     overlay_unsent_ = false;
     menu_key_ = false;
     sent_pointer_shown_.reset();
+    overlay_taps_.clear();
 }
 
 bool ExternalFrameLink::accept_peer(std::string* error) {
@@ -493,6 +494,7 @@ bool ExternalFrameLink::accept_peer(std::string* error) {
     overlay_unsent_ = false;
     menu_key_ = false;
     sent_pointer_shown_.reset();
+    overlay_taps_.clear();
     // The memory goes over first, before anything is said about it, so a
     // producer never has to handle a frame announcement for memory it cannot
     // see yet.
@@ -654,6 +656,18 @@ bool ExternalFrameLink::handle_message(ExternalControl kind, const std::vector<u
         case ExternalControl::MenuKey:
             menu_key_ = true;
             return true;
+        case ExternalControl::OverlayTap: {
+            if (body.size() < 8) return true;
+            std::array<float, 4> tap{};
+            for (int i = 0; i < 4; ++i) {
+                const uint16_t value = static_cast<uint16_t>(body[i * 2] | (body[i * 2 + 1] << 8));
+                tap[static_cast<std::size_t>(i)] = static_cast<float>(value) / 65535.0f;
+            }
+            overlay_taps_.push_back(tap);
+            // Bounded: a caller that never takes these must not grow them.
+            if (overlay_taps_.size() > 16) overlay_taps_.erase(overlay_taps_.begin());
+            return true;
+        }
         case ExternalControl::Shutdown:
             if (error != nullptr) *error = "the game closed";
             return false;
@@ -866,6 +880,19 @@ void ExternalFrameLink::set_pointer_shown(bool shown) {
     if (sent) {
         sent_pointer_shown_ = shown;
     }
+}
+
+bool ExternalFrameLink::take_overlay_tap(float& press_x, float& press_y, float& x, float& y) {
+    if (overlay_taps_.empty()) {
+        return false;
+    }
+    const std::array<float, 4> tap = overlay_taps_.front();
+    overlay_taps_.erase(overlay_taps_.begin());
+    press_x = tap[0];
+    press_y = tap[1];
+    x = tap[2];
+    y = tap[3];
+    return true;
 }
 
 bool ExternalFrameLink::take_menu_key() {
@@ -1222,6 +1249,22 @@ void ExternalFrameProducer::send_menu_key() {
     write_all(fd_, message.data(), message.size());
 }
 
+void ExternalFrameProducer::send_overlay_tap(float press_x, float press_y, float x, float y) {
+    if (fd_ < 0) {
+        return;
+    }
+    std::vector<uint8_t> body;
+    for (const float value : {press_x, press_y, x, y}) {
+        const auto scaled = static_cast<uint16_t>(std::clamp(value, 0.0f, 1.0f) * 65535.0f + 0.5f);
+        body.push_back(static_cast<uint8_t>(scaled & 0xFFu));
+        body.push_back(static_cast<uint8_t>(scaled >> 8));
+    }
+    // A press the player made once, so it waits for room, as the menu key does.
+    std::vector<uint8_t> message;
+    frame_message(ExternalControl::OverlayTap, body, message);
+    write_all(fd_, message.data(), message.size());
+}
+
 bool ExternalFrameProducer::take_overlay(std::vector<uint8_t>& rgba, int& width, int& height) {
     if (memory_ == nullptr || !overlay_available() || !overlay_visible_ || overlay_slot_ < 0 ||
         overlay_serial_ == overlay_taken_serial_) {
@@ -1376,6 +1419,7 @@ void ExternalFrameLink::hide_overlay() {}
 void ExternalFrameLink::send_overlay_state() {}
 bool ExternalFrameLink::take_menu_key() { return false; }
 void ExternalFrameLink::set_pointer_shown(bool) {}
+bool ExternalFrameLink::take_overlay_tap(float&, float&, float&, float&) { return false; }
 
 ExternalFrameProducer::~ExternalFrameProducer() = default;
 void ExternalFrameProducer::close() {}
@@ -1394,6 +1438,7 @@ bool ExternalFrameProducer::send_audio(ScreenId, const int16_t*, std::size_t, st
 void ExternalFrameProducer::send_rumble(bool) {}
 void ExternalFrameProducer::send_player_rumble(int, bool) {}
 void ExternalFrameProducer::send_menu_key() {}
+void ExternalFrameProducer::send_overlay_tap(float, float, float, float) {}
 bool ExternalFrameProducer::take_overlay(std::vector<uint8_t>&, int&, int&) { return false; }
 bool ExternalFrameProducer::poll(bool& out_reset_requested, std::string*) {
     out_reset_requested = false;

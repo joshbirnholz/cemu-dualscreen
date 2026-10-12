@@ -163,6 +163,16 @@ public:
 	// F1 pressed in its own. Not Tab, which Cemu holds to show the GamePad.
 	void SendMenuKey();
 
+	// Where the overlay was last drawn in the main window, in the same pixels
+	// its mouse events are given in -- set by the renderer each frame it
+	// draws one. MapToOverlay() turns a point in the window into a fraction
+	// of the overlay's width and height, and is false when none is drawn.
+	void SetOverlayRect(float left, float top, float right, float bottom);
+	bool MapToOverlay(float x, float y, float& outX, float& outY);
+	// A click or touch on the overlay: where it went down and came up, as
+	// MapToOverlay() gives them. Dualscreen treats it as a tap on its menu.
+	void SendOverlayTap(float pressX, float pressY, float x, float y);
+
 	// Dualscreen's Pointer setting, for this window: 1 shown, 0 hidden, -1
 	// when no Dualscreen is attached to say. Only the pointer: a click still
 	// touches the GamePad's screen either way, since on a touchscreen that is
@@ -244,6 +254,8 @@ private:
 	// The overlay as Poll() last took it, waiting for the renderer.
 	std::atomic<bool> m_overlayVisibleAtomic{false};
 	std::atomic<bool> m_pointerShownAtomic{true};
+	std::mutex m_overlayRectMutex;
+	float m_overlayRect[4] = {0, 0, 0, 0};
 	std::mutex m_overlayMutex;
 	std::vector<uint8_t> m_overlayPixels;
 	int m_overlayWidth = 0;

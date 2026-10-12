@@ -4,6 +4,7 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <array>
 #include <optional>
 #include <string>
 #include <utility>
@@ -128,6 +129,11 @@ enum class ExternalControl : uint8_t {
     // never do" -- this app's Pointer setting. A producer that predates it
     // ignores it and goes on as it was.
     Pointer = 13,
+    // producer -> consumer, "the overlay was tapped": where the click or
+    // finger went down and where it came up, each as a fraction of the
+    // overlay's width and height in 1/65535ths. A click on the menu is the
+    // menu's, not the game's, so the producer keeps it from the game.
+    OverlayTap = 14,
 };
 
 // How many players the link carries besides the GamePad, which is not one of
@@ -466,6 +472,9 @@ public:
     // This app's Pointer setting, for the producer's own window -- see
     // ExternalControl::Pointer. Only a change is put on the wire.
     void set_pointer_shown(bool shown);
+    // A tap on the overlay, oldest first: where it went down and came up, as
+    // fractions of the overlay's width and height. False when there is none.
+    bool take_overlay_tap(float& press_x, float& press_y, float& x, float& y);
 
     // One player's pad, the same way send_input() sends the GamePad's -- only
     // what changed, never blocking. `connected` false means nothing is
@@ -545,6 +554,7 @@ private:
     void send_overlay_state();
     // The Pointer setting as last delivered; absent until one has been.
     std::optional<bool> sent_pointer_shown_;
+    std::vector<std::array<float, 4>> overlay_taps_;
     ExternalOverlayArea* overlay_area() {
         return reinterpret_cast<ExternalOverlayArea*>(static_cast<uint8_t*>(memory_) +
                                                       ExternalOverlayArea::offset());
@@ -648,6 +658,9 @@ public:
     // Whether the consumer wants the mouse pointer shown over this window --
     // true until it has said otherwise.
     bool pointer_shown() const { return pointer_shown_; }
+    // A tap on the overlay, as take_overlay_tap() hands it over at the other
+    // end: fractions of the overlay's width and height, 0 to 1.
+    void send_overlay_tap(float press_x, float press_y, float x, float y);
 
 private:
     ExternalSharedHeader* header() { return static_cast<ExternalSharedHeader*>(memory_); }

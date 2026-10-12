@@ -1406,9 +1406,47 @@ void MainWindow::OnMouseMove(wxMouseEvent& event)
 		SetMenuVisible(event.GetPosition().y < 50);
 }
 
+// A click or touch on Dualscreen's menu, while it is drawn over the game: the
+// menu's, so it is handed to Dualscreen as a tap and the game never sees it.
+// True when it was taken.
+static bool DualscreenMenuTakes(const wxPoint& physPos, bool down)
+{
+	static bool s_pressed = false;
+	static float s_pressX = 0.0f;
+	static float s_pressY = 0.0f;
+	auto& session = DualscreenSession::instance();
+	float x = 0.0f;
+	float y = 0.0f;
+	if (!session.MapToOverlay((float)physPos.x, (float)physPos.y, x, y))
+	{
+		s_pressed = false;
+		return false;
+	}
+	if (down)
+	{
+		s_pressed = true;
+		s_pressX = x;
+		s_pressY = y;
+	}
+	else if (s_pressed)
+	{
+		s_pressed = false;
+		session.SendOverlayTap(s_pressX, s_pressY, x, y);
+	}
+	return true;
+}
+
 void MainWindow::OnMouseLeft(wxMouseEvent& event)
 {
 	auto& instance = InputManager::instance();
+
+	if (DualscreenMenuTakes(ToPhys(event.GetPosition()), event.ButtonDown(wxMOUSE_BTN_LEFT)))
+	{
+		std::scoped_lock lock(instance.m_main_mouse.m_mutex);
+		instance.m_main_mouse.left_down = false;
+		event.Skip();
+		return;
+	}
 
 	std::scoped_lock lock(instance.m_main_mouse.m_mutex);
 	instance.m_main_mouse.left_down = event.ButtonDown(wxMOUSE_BTN_LEFT);
@@ -1572,6 +1610,14 @@ void MainWindow::OnToolsInput(wxCommandEvent& event)
 void MainWindow::OnGesturePan(wxPanGestureEvent& event)
 {
 	auto& instance = InputManager::instance();
+
+	if (DualscreenMenuTakes(ToPhys(event.GetPosition()), !event.IsGestureEnd()))
+	{
+		std::scoped_lock lock(instance.m_main_touch.m_mutex);
+		instance.m_main_touch.left_down = false;
+		event.Skip();
+		return;
+	}
 	std::scoped_lock lock(instance.m_main_touch.m_mutex);
 	auto physPos = ToPhys(event.GetPosition());
 	instance.m_main_touch.position = { physPos.x, physPos.y };

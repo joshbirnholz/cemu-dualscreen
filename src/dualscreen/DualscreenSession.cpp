@@ -1,3 +1,4 @@
+#include <algorithm>
 #include "DualscreenSession.h"
 
 #include "Common/precompiled.h"
@@ -526,4 +527,35 @@ void DualscreenSession::SendMenuKey()
 		return;
 	m_producer.send_menu_key();
 	cemuLog_log(LogType::Force, "Dualscreen: F1 pressed; asking for the menu");
+}
+
+void DualscreenSession::SetOverlayRect(float left, float top, float right, float bottom)
+{
+	std::scoped_lock rect(m_overlayRectMutex);
+	m_overlayRect[0] = left;
+	m_overlayRect[1] = top;
+	m_overlayRect[2] = right;
+	m_overlayRect[3] = bottom;
+}
+
+bool DualscreenSession::MapToOverlay(float x, float y, float& outX, float& outY)
+{
+	if (!OverlayVisible())
+		return false;
+	std::scoped_lock rect(m_overlayRectMutex);
+	const float width = m_overlayRect[2] - m_overlayRect[0];
+	const float height = m_overlayRect[3] - m_overlayRect[1];
+	if (width <= 0.0f || height <= 0.0f)
+		return false;
+	outX = std::clamp((x - m_overlayRect[0]) / width, 0.0f, 1.0f);
+	outY = std::clamp((y - m_overlayRect[1]) / height, 0.0f, 1.0f);
+	return true;
+}
+
+void DualscreenSession::SendOverlayTap(float pressX, float pressY, float x, float y)
+{
+	std::scoped_lock lock(m_mutex);
+	if (!m_running)
+		return;
+	m_producer.send_overlay_tap(pressX, pressY, x, y);
 }
