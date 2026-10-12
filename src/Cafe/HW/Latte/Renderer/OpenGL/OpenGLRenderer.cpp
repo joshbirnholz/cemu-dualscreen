@@ -173,6 +173,8 @@ bool OpenGLRenderer::ImguiBegin(bool mainWindow)
 	if (glClipControl)
 		glClipControl(GL_LOWER_LEFT, GL_NEGATIVE_ONE_TO_ONE);
 
+	if (g_imguiBeforeFrame)
+		g_imguiBeforeFrame(mainWindow);
 	ImGui_ImplOpenGL3_NewFrame();
 	ImGui_UpdateWindowInformation(mainWindow);
 	ImGui::NewFrame();

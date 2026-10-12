@@ -61,6 +61,8 @@ void Renderer::Shutdown()
 	delete imguiFontAtlas;
 }
 
+void (*g_imguiBeforeFrame)(bool mainWindow) = nullptr;
+
 bool Renderer::ImguiBegin(bool mainWindow)
 {
 	sint32 w = 0, h = 0;

@@ -29,6 +29,12 @@ enum class GfxVendor
 	MAX
 };
 
+// Called as each ImGui frame begins, before ImGui's own render pass and
+// outside any other: where a texture an overlay draws from can be made, since
+// uploading one is a copy, and a copy inside a render pass is not allowed --
+// on Vulkan it wiped the frame it was made in. Null when nothing needs it.
+extern void (*g_imguiBeforeFrame)(bool mainWindow);
+
 enum class RendererAPI
 {
 	OpenGL,

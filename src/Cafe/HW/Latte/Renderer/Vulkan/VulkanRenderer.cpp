@@ -2073,6 +2073,8 @@ bool VulkanRenderer::ImguiBegin(bool mainWindow)
 	draw_endRenderPass();
 	m_state.currentPipeline = VK_NULL_HANDLE;
 
+	if (g_imguiBeforeFrame)
+		g_imguiBeforeFrame(mainWindow);
 	ImGui_ImplVulkan_CreateFontsTexture(m_state.currentCommandBuffer);
 	ImGui_ImplVulkan_NewFrame(m_state.currentCommandBuffer, chainInfo.m_swapchainFramebuffers[chainInfo.swapchainImageIndex], chainInfo.getExtent());
 	ImGui_UpdateWindowInformation(mainWindow);
