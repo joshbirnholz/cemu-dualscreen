@@ -1,4 +1,5 @@
 #pragma once
+#include <atomic>
 #include <pugixml.hpp>
 
 class ControllerBase;
@@ -118,6 +119,13 @@ protected:
 		uint64 button;
 	};
 	std::unordered_map<uint64, Mapping> m_mappings;
+
+	// Dualscreen's menu is up over the game, or was, and something pressed
+	// for it is still held: nothing reaches the game until it is let go. The
+	// presses that work the menu -- and the B that closes it -- are the
+	// menu's. Called with m_mutex held.
+	bool held_for_menu() const;
+	mutable std::atomic<bool> m_held_for_menu{false};
 
 	bool m_homebutton_down = false;
 };

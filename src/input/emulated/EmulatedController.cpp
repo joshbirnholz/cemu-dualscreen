@@ -1,4 +1,5 @@
 #include "input/emulated/EmulatedController.h"
+#include "DualscreenSession.h"
 
 #include "input/api/Controller.h"
 
@@ -261,9 +262,32 @@ void EmulatedController::clear_controllers()
 	m_controllers.clear();
 }
 
+bool EmulatedController::held_for_menu() const
+{
+	if (DualscreenSession::instance().OverlayVisible())
+	{
+		m_held_for_menu = true;
+		return true;
+	}
+	if (!m_held_for_menu)
+		return false;
+	for (const auto& [mapping, target] : m_mappings)
+	{
+		if (const auto controller = target.controller.lock())
+		{
+			if (controller->get_state().buttons.GetButtonState(target.button))
+				return true;
+		}
+	}
+	m_held_for_menu = false;
+	return false;
+}
+
 float EmulatedController::get_axis_value(uint64 mapping) const
 {
 	std::shared_lock lock(m_mutex);
+	if (held_for_menu())
+		return 0;
 	const auto it = m_mappings.find(mapping);
 	if (it != m_mappings.cend())
 	{
@@ -278,6 +302,8 @@ float EmulatedController::get_axis_value(uint64 mapping) const
 bool EmulatedController::is_mapping_down(uint64 mapping) const
 {
 	std::shared_lock lock(m_mutex);
+	if (held_for_menu())
+		return false;
 	const auto it = m_mappings.find(mapping);
 	if (it != m_mappings.cend())
 	{
