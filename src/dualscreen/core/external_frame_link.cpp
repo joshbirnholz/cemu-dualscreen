@@ -473,6 +473,7 @@ void ExternalFrameLink::close() {
     overlay_taps_.clear();
     sent_pause_.reset();
     pause_states_.clear();
+    menu_keyboard_.clear();
 }
 
 bool ExternalFrameLink::accept_peer(std::string* error) {
@@ -499,6 +500,7 @@ bool ExternalFrameLink::accept_peer(std::string* error) {
     overlay_taps_.clear();
     sent_pause_.reset();
     pause_states_.clear();
+    menu_keyboard_.clear();
     // The memory goes over first, before anything is said about it, so a
     // producer never has to handle a frame announcement for memory it cannot
     // see yet.
@@ -679,6 +681,14 @@ bool ExternalFrameLink::handle_message(ExternalControl kind, const std::vector<u
             pause_states_.push_back(static_cast<ExternalPauseState>(body[0]));
             // Bounded like the taps above.
             if (pause_states_.size() > 16) pause_states_.erase(pause_states_.begin());
+            return true;
+        case ExternalControl::MenuKeyboard:
+            if (body.size() < 2 || body[0] >= static_cast<uint8_t>(ExternalMenuKey::Count)) {
+                return true;
+            }
+            menu_keyboard_.emplace_back(static_cast<ExternalMenuKey>(body[0]), body[1] != 0u);
+            // Bounded like the taps above.
+            if (menu_keyboard_.size() > 64) menu_keyboard_.erase(menu_keyboard_.begin());
             return true;
         case ExternalControl::Shutdown:
             if (error != nullptr) *error = "the game closed";
@@ -933,6 +943,16 @@ bool ExternalFrameLink::take_pause_state(ExternalPauseState& out) {
     }
     out = pause_states_.front();
     pause_states_.erase(pause_states_.begin());
+    return true;
+}
+
+bool ExternalFrameLink::take_menu_keyboard(ExternalMenuKey& key, bool& down) {
+    if (menu_keyboard_.empty()) {
+        return false;
+    }
+    key = menu_keyboard_.front().first;
+    down = menu_keyboard_.front().second;
+    menu_keyboard_.erase(menu_keyboard_.begin());
     return true;
 }
 
@@ -1321,6 +1341,17 @@ void ExternalFrameProducer::send_pause_state(ExternalPauseState state) {
     write_all(fd_, message.data(), message.size());
 }
 
+void ExternalFrameProducer::send_menu_keyboard(ExternalMenuKey key, bool down) {
+    if (fd_ < 0) {
+        return;
+    }
+    // A key the player pressed, so it waits for room, as the menu key does.
+    std::vector<uint8_t> message;
+    frame_message(ExternalControl::MenuKeyboard,
+                  {static_cast<uint8_t>(key), static_cast<uint8_t>(down ? 1u : 0u)}, message);
+    write_all(fd_, message.data(), message.size());
+}
+
 bool ExternalFrameProducer::take_overlay(std::vector<uint8_t>& rgba, int& width, int& height) {
     if (memory_ == nullptr || !overlay_available() || !overlay_visible_ || overlay_slot_ < 0 ||
         overlay_serial_ == overlay_taken_serial_) {
@@ -1484,6 +1515,7 @@ void ExternalFrameLink::set_pointer_shown(bool) {}
 bool ExternalFrameLink::take_overlay_tap(float&, float&, float&, float&) { return false; }
 void ExternalFrameLink::request_pause(bool) {}
 bool ExternalFrameLink::take_pause_state(ExternalPauseState&) { return false; }
+bool ExternalFrameLink::take_menu_keyboard(ExternalMenuKey&, bool&) { return false; }
 
 ExternalFrameProducer::~ExternalFrameProducer() = default;
 void ExternalFrameProducer::close() {}
@@ -1505,6 +1537,7 @@ void ExternalFrameProducer::send_menu_key() {}
 void ExternalFrameProducer::send_overlay_tap(float, float, float, float) {}
 bool ExternalFrameProducer::take_pause_request(bool&) { return false; }
 void ExternalFrameProducer::send_pause_state(ExternalPauseState) {}
+void ExternalFrameProducer::send_menu_keyboard(ExternalMenuKey, bool) {}
 bool ExternalFrameProducer::take_overlay(std::vector<uint8_t>&, int&, int&) { return false; }
 bool ExternalFrameProducer::poll(bool& out_reset_requested, std::string*) {
     out_reset_requested = false;

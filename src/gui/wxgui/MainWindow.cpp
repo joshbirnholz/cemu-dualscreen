@@ -169,6 +169,7 @@ wxBEGIN_EVENT_TABLE(MainWindow, wxFrame)
 EVT_TIMER(MAINFRAME_ID_TIMER1, MainWindow::OnTimer)
 EVT_CLOSE(MainWindow::OnClose)
 EVT_SIZE(MainWindow::OnSizeEvent)
+EVT_CHAR_HOOK(MainWindow::OnCharHook)
 EVT_DPI_CHANGED(MainWindow::OnDPIChangedEvent)
 EVT_MOVE(MainWindow::OnMove)
 // file menu
@@ -1498,8 +1499,52 @@ void MainWindow::OnSetWindowTitle(wxCommandEvent& event)
 	this->SetTitle(event.GetString());
 }
 
+// The keys Dualscreen's menu answers, while it is over this window -- see
+// DualscreenSession::SendMenuKeyboard(). This window has the keyboard then, so
+// only it can hear them. Not F1, which is the menu's own key, and Escape only
+// as Back: it never opens the menu from here.
+static std::optional<ds::ExternalMenuKey> DualscreenMenuKeyFor(const wxKeyEvent& event)
+{
+	if (event.HasAnyModifiers())
+		return std::nullopt;
+	switch (event.GetKeyCode())
+	{
+	case WXK_UP: case WXK_NUMPAD_UP: return ds::ExternalMenuKey::Up;
+	case WXK_DOWN: case WXK_NUMPAD_DOWN: return ds::ExternalMenuKey::Down;
+	case WXK_LEFT: case WXK_NUMPAD_LEFT: return ds::ExternalMenuKey::Left;
+	case WXK_RIGHT: case WXK_NUMPAD_RIGHT: return ds::ExternalMenuKey::Right;
+	case WXK_PAGEUP: return ds::ExternalMenuKey::PageUp;
+	case WXK_PAGEDOWN: return ds::ExternalMenuKey::PageDown;
+	case WXK_RETURN: case WXK_NUMPAD_ENTER: case WXK_SPACE: return ds::ExternalMenuKey::Confirm;
+	case WXK_ESCAPE: case WXK_BACK: return ds::ExternalMenuKey::Back;
+	case WXK_F2: return ds::ExternalMenuKey::Filter;
+	case WXK_F3: return ds::ExternalMenuKey::SwapLayout;
+	case WXK_F4: return ds::ExternalMenuKey::Settings;
+	case WXK_F5: return ds::ExternalMenuKey::Reset;
+	case WXK_F6: return ds::ExternalMenuKey::Quit;
+	case WXK_F7: return ds::ExternalMenuKey::Disconnect;
+	default: return std::nullopt;
+	}
+}
+
+// Which of them are down, so a key's own repeats are not sent -- Dualscreen
+// repeats a held arrow itself -- and a key let go after the menu closed is
+// still said to be up.
+static bool s_dualscreenMenuKeyDown[(size_t)ds::ExternalMenuKey::Count] = {};
+
 void MainWindow::OnKeyUp(wxKeyEvent& event)
 {
+	if (const auto key = DualscreenMenuKeyFor(event))
+	{
+		bool& down = s_dualscreenMenuKeyDown[(size_t)*key];
+		if (down)
+		{
+			down = false;
+			DualscreenSession::instance().SendMenuKeyboard(*key, false);
+			return;
+		}
+	}
+
 	event.Skip();
 
 	if (swkbd_hasKeyboardInputHook())
@@ -1514,6 +1559,26 @@ void MainWindow::OnKeyUp(wxKeyEvent& event)
 	}
 
 	HotkeySettings::CaptureInput(event);
+}
+
+// Before any of this window's children, whichever has the focus: a key down
+// here is the menu's while Dualscreen's is up, and Cemu's otherwise.
+void MainWindow::OnCharHook(wxKeyEvent& event)
+{
+	if (DualscreenSession::instance().OverlayVisible() && !swkbd_hasKeyboardInputHook())
+	{
+		if (const auto key = DualscreenMenuKeyFor(event))
+		{
+			bool& down = s_dualscreenMenuKeyDown[(size_t)*key];
+			if (!down)
+			{
+				down = true;
+				DualscreenSession::instance().SendMenuKeyboard(*key, true);
+			}
+			return; // the menu's, not Cemu's or the game's
+		}
+	}
+	event.Skip();
 }
 
 void MainWindow::OnKeyDown(wxKeyEvent& event)

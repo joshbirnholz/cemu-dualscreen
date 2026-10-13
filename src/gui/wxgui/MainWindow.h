@@ -127,6 +127,7 @@ public:
 
 	void OnKeyUp(wxKeyEvent& event);
 	void OnKeyDown(wxKeyEvent& event);
+	void OnCharHook(wxKeyEvent& event);
 	void OnChar(wxKeyEvent& event);
 
 	void OnToolsInput(wxCommandEvent& event);

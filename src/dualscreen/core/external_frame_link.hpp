@@ -157,6 +157,29 @@ enum class ExternalControl : uint8_t {
     Pause = 15,
     // producer -> consumer, an ExternalPauseState, each time it changes.
     PauseState = 16,
+    // producer -> consumer, "this menu key went down" (1) or "up" (0) in my
+    // window, while the consumer's overlay is up: an ExternalMenuKey. The
+    // producer's window has the keyboard then, and only the consumer knows
+    // what its menu does with a key. Ups as well as downs, so a held arrow
+    // can repeat on the consumer's side as one held in its own window does.
+    MenuKeyboard = 17,
+};
+
+// The keys a menu answers, by what they mean to it rather than any keyboard's
+// codes, so neither end needs the other's. The order is the wire format, so
+// entries are only ever added at the end.
+enum class ExternalMenuKey : uint8_t {
+    Up, Down, Left, Right,
+    PageUp, PageDown,
+    Confirm,     // Enter, Space
+    Back,        // Escape, Backspace
+    Filter,      // F2
+    SwapLayout,  // F3
+    Settings,    // F4
+    Reset,       // F5
+    Quit,        // F6
+    Disconnect,  // F7
+    Count
 };
 
 // How many players the link carries besides the GamePad, which is not one of
@@ -508,6 +531,10 @@ public:
     // first. False when it has said nothing new.
     bool take_pause_state(ExternalPauseState& out);
 
+    // A menu key pressed or let go in the producer's window, oldest first --
+    // see ExternalControl::MenuKeyboard. False when there is none.
+    bool take_menu_keyboard(ExternalMenuKey& key, bool& down);
+
     // One player's pad, the same way send_input() sends the GamePad's -- only
     // what changed, never blocking. `connected` false means nothing is
     // feeding this player any more, which a producer should show as the
@@ -590,6 +617,7 @@ private:
     // What request_pause() last got onto the wire; absent until it has.
     std::optional<bool> sent_pause_;
     std::vector<ExternalPauseState> pause_states_;
+    std::vector<std::pair<ExternalMenuKey, bool>> menu_keyboard_;
     ExternalOverlayArea* overlay_area() {
         return reinterpret_cast<ExternalOverlayArea*>(static_cast<uint8_t*>(memory_) +
                                                       ExternalOverlayArea::offset());
@@ -703,6 +731,10 @@ public:
     // Tells the consumer where the game is now: paused once it has stopped,
     // refused when it cannot, running when it goes on.
     void send_pause_state(ExternalPauseState state);
+
+    // A menu key going down or up in this producer's window, for the
+    // consumer's menu over it -- see ExternalControl::MenuKeyboard.
+    void send_menu_keyboard(ExternalMenuKey key, bool down);
 
 private:
     ExternalSharedHeader* header() { return static_cast<ExternalSharedHeader*>(memory_); }

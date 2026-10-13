@@ -172,6 +172,10 @@ public:
 	// A click or touch on the overlay: where it went down and came up, as
 	// MapToOverlay() gives them. Dualscreen treats it as a tap on its menu.
 	void SendOverlayTap(float pressX, float pressY, float x, float y);
+	// A key of Dualscreen's menu going down or up in this window while the
+	// menu is over it -- the arrows, Enter, Escape and the like, which this
+	// window hears and Dualscreen's menu answers.
+	void SendMenuKeyboard(ds::ExternalMenuKey key, bool down);
 
 	// Dualscreen's quick menu pausing the game, as the HOME Menu would -- see
 	// coreinit_Misc.cpp. TakePauseRequest() hands over what Dualscreen asked

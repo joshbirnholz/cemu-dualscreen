@@ -578,6 +578,14 @@ bool DualscreenSession::MapToOverlay(float x, float y, float& outX, float& outY)
 	return true;
 }
 
+void DualscreenSession::SendMenuKeyboard(ds::ExternalMenuKey key, bool down)
+{
+	std::scoped_lock lock(m_mutex);
+	if (!m_running)
+		return;
+	m_producer.send_menu_keyboard(key, down);
+}
+
 void DualscreenSession::SendOverlayTap(float pressX, float pressY, float x, float y)
 {
 	std::scoped_lock lock(m_mutex);
