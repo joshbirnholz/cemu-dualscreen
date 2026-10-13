@@ -438,6 +438,44 @@ bool read_graphic_packs(const std::vector<uint8_t>& body, std::vector<ExternalGr
     return true;
 }
 
+void put_options(std::vector<uint8_t>& out, const std::vector<ExternalOption>& options) {
+    const std::size_t count = std::min<std::size_t>(options.size(), kMaxGraphicPackItems);
+    put_u32(out, static_cast<uint32_t>(count));
+    for (std::size_t index = 0; index < count; ++index) {
+        const ExternalOption& option = options[index];
+        put_text(out, option.id);
+        put_text(out, option.label);
+        out.push_back(option.restart_needed ? 1u : 0u);
+        const std::size_t choices = std::min<std::size_t>(option.choices.size(), kMaxGraphicPackItems);
+        put_u16(out, static_cast<uint16_t>(choices));
+        for (std::size_t c = 0; c < choices; ++c) put_text(out, option.choices[c]);
+        const bool chosen = option.active >= 0 && static_cast<std::size_t>(option.active) < choices;
+        put_u16(out, chosen ? static_cast<uint16_t>(option.active) : 0xFFFFu);
+    }
+}
+
+bool read_options(const std::vector<uint8_t>& body, std::vector<ExternalOption>& out) {
+    BodyReader reader{body};
+    const uint32_t count = reader.u32();
+    if (count > kMaxGraphicPackItems) return false;
+    std::vector<ExternalOption> options;
+    for (uint32_t index = 0; index < count && reader.ok; ++index) {
+        ExternalOption option;
+        option.id = reader.text();
+        option.label = reader.text();
+        option.restart_needed = reader.u8() != 0u;
+        const uint16_t choices = reader.u16();
+        if (choices > kMaxGraphicPackItems) return false;
+        for (uint16_t c = 0; c < choices && reader.ok; ++c) option.choices.push_back(reader.text());
+        const uint16_t active = reader.u16();
+        option.active = active < choices ? static_cast<int>(active) : -1;
+        options.push_back(std::move(option));
+    }
+    if (!reader.ok) return false;
+    out = std::move(options);
+    return true;
+}
+
 }  // namespace
 
 // --- consumer ---------------------------------------------------------------
@@ -576,6 +614,8 @@ void ExternalFrameLink::close() {
     pause_states_.clear();
     menu_keyboard_.clear();
     graphic_packs_.reset();
+    options_.reset();
+    amiibo_results_.clear();
 }
 
 bool ExternalFrameLink::accept_peer(std::string* error) {
@@ -604,6 +644,8 @@ bool ExternalFrameLink::accept_peer(std::string* error) {
     pause_states_.clear();
     menu_keyboard_.clear();
     graphic_packs_.reset();
+    options_.reset();
+    amiibo_results_.clear();
     // The memory goes over first, before anything is said about it, so a
     // producer never has to handle a frame announcement for memory it cannot
     // see yet.
@@ -799,6 +841,18 @@ bool ExternalFrameLink::handle_message(ExternalControl kind, const std::vector<u
             if (read_graphic_packs(body, packs)) graphic_packs_ = std::move(packs);
             return true;
         }
+        case ExternalControl::Options: {
+            std::vector<ExternalOption> options;
+            if (read_options(body, options)) options_ = std::move(options);
+            return true;
+        }
+        case ExternalControl::AmiiboScanned:
+            if (body.empty() || body[0] > static_cast<uint8_t>(ExternalAmiiboResult::NoGame)) {
+                return true;
+            }
+            amiibo_results_.push_back(static_cast<ExternalAmiiboResult>(body[0]));
+            if (amiibo_results_.size() > 16) amiibo_results_.erase(amiibo_results_.begin());
+            return true;
         case ExternalControl::Shutdown:
             if (error != nullptr) *error = "the game closed";
             return false;
@@ -811,6 +865,9 @@ bool ExternalFrameLink::handle_message(ExternalControl kind, const std::vector<u
         case ExternalControl::Pause:
         case ExternalControl::GraphicPacksWanted:
         case ExternalControl::GraphicPackChange:
+        case ExternalControl::OptionsWanted:
+        case ExternalControl::OptionChange:
+        case ExternalControl::ScanAmiibo:
             // Ours to send, not to receive.
             return true;
     }
@@ -1083,6 +1140,40 @@ bool ExternalFrameLink::take_graphic_packs(std::vector<ExternalGraphicPack>& out
     return true;
 }
 
+void ExternalFrameLink::request_options() {
+    if (!options_supported()) return;
+    send_control(ExternalControl::OptionsWanted, {});
+}
+
+bool ExternalFrameLink::take_options(std::vector<ExternalOption>& out) {
+    if (!options_) return false;
+    out = std::move(*options_);
+    options_.reset();
+    return true;
+}
+
+void ExternalFrameLink::change_option(const std::string& id, int choice) {
+    if (!options_supported() || choice < 0) return;
+    std::vector<uint8_t> body;
+    put_text(body, id);
+    put_u32(body, static_cast<uint32_t>(choice));
+    send_control(ExternalControl::OptionChange, body);
+}
+
+void ExternalFrameLink::scan_amiibo(const std::string& path) {
+    if (!amiibo_supported()) return;
+    std::vector<uint8_t> body;
+    put_text(body, path);
+    send_control(ExternalControl::ScanAmiibo, body);
+}
+
+bool ExternalFrameLink::take_amiibo_result(ExternalAmiiboResult& out) {
+    if (amiibo_results_.empty()) return false;
+    out = amiibo_results_.front();
+    amiibo_results_.erase(amiibo_results_.begin());
+    return true;
+}
+
 void ExternalFrameLink::change_graphic_pack(const ExternalGraphicPackChange& change) {
     if (!graphic_packs_supported()) return;
     std::vector<uint8_t> body;
@@ -1285,6 +1376,9 @@ void ExternalFrameProducer::close() {
     pause_requests_.clear();
     graphic_packs_wanted_ = false;
     graphic_pack_changes_.clear();
+    options_wanted_ = false;
+    option_changes_.clear();
+    amiibo_scans_.clear();
     inbox_.clear();
     // Same reason as the other end: whether a pad has ever arrived is a fact
     // about one session, and a fork reads it to decide whether to keep using
@@ -1506,6 +1600,44 @@ void ExternalFrameProducer::send_graphic_packs(const std::vector<ExternalGraphic
     write_all(fd_, message.data(), message.size());
 }
 
+bool ExternalFrameProducer::take_options_wanted() {
+    const bool wanted = options_wanted_;
+    options_wanted_ = false;
+    return wanted;
+}
+
+bool ExternalFrameProducer::take_option_change(std::string& id, int& choice) {
+    if (option_changes_.empty()) return false;
+    id = std::move(option_changes_.front().first);
+    choice = option_changes_.front().second;
+    option_changes_.erase(option_changes_.begin());
+    return true;
+}
+
+void ExternalFrameProducer::send_options(const std::vector<ExternalOption>& options) {
+    if (fd_ < 0) return;
+    // An answer the menu is waiting on, so it waits for room.
+    std::vector<uint8_t> body;
+    put_options(body, options);
+    std::vector<uint8_t> message;
+    frame_message(ExternalControl::Options, body, message);
+    write_all(fd_, message.data(), message.size());
+}
+
+bool ExternalFrameProducer::take_amiibo_scan(std::string& path) {
+    if (amiibo_scans_.empty()) return false;
+    path = std::move(amiibo_scans_.front());
+    amiibo_scans_.erase(amiibo_scans_.begin());
+    return true;
+}
+
+void ExternalFrameProducer::send_amiibo_result(ExternalAmiiboResult result) {
+    if (fd_ < 0) return;
+    std::vector<uint8_t> message;
+    frame_message(ExternalControl::AmiiboScanned, {static_cast<uint8_t>(result)}, message);
+    write_all(fd_, message.data(), message.size());
+}
+
 void ExternalFrameProducer::send_menu_keyboard(ExternalMenuKey key, bool down) {
     if (fd_ < 0) {
         return;
@@ -1618,6 +1750,23 @@ bool ExternalFrameProducer::poll(bool& out_reset_requested, std::string* error) 
                 overlay_serial_ = static_cast<uint64_t>(read_u32(body.data() + 2)) |
                                   (static_cast<uint64_t>(read_u32(body.data() + 6)) << 32);
             }
+        } else if (kind == ExternalControl::OptionsWanted) {
+            options_wanted_ = true;
+        } else if (kind == ExternalControl::OptionChange) {
+            BodyReader reader{body};
+            std::string id = reader.text();
+            const uint32_t choice = reader.u32();
+            if (reader.ok && choice <= kMaxGraphicPackItems) {
+                option_changes_.emplace_back(std::move(id), static_cast<int>(choice));
+                if (option_changes_.size() > 64) option_changes_.erase(option_changes_.begin());
+            }
+        } else if (kind == ExternalControl::ScanAmiibo) {
+            BodyReader reader{body};
+            std::string path = reader.text();
+            if (reader.ok && !path.empty()) {
+                amiibo_scans_.push_back(std::move(path));
+                if (amiibo_scans_.size() > 4) amiibo_scans_.erase(amiibo_scans_.begin());
+            }
         } else if (kind == ExternalControl::GraphicPacksWanted) {
             graphic_packs_wanted_ = true;
         } else if (kind == ExternalControl::GraphicPackChange) {
@@ -1703,6 +1852,11 @@ bool ExternalFrameLink::take_menu_keyboard(ExternalMenuKey&, bool&) { return fal
 void ExternalFrameLink::request_graphic_packs() {}
 bool ExternalFrameLink::take_graphic_packs(std::vector<ExternalGraphicPack>&) { return false; }
 void ExternalFrameLink::change_graphic_pack(const ExternalGraphicPackChange&) {}
+void ExternalFrameLink::request_options() {}
+bool ExternalFrameLink::take_options(std::vector<ExternalOption>&) { return false; }
+void ExternalFrameLink::change_option(const std::string&, int) {}
+void ExternalFrameLink::scan_amiibo(const std::string&) {}
+bool ExternalFrameLink::take_amiibo_result(ExternalAmiiboResult&) { return false; }
 
 ExternalFrameProducer::~ExternalFrameProducer() = default;
 void ExternalFrameProducer::close() {}
@@ -1728,6 +1882,11 @@ void ExternalFrameProducer::send_menu_keyboard(ExternalMenuKey, bool) {}
 bool ExternalFrameProducer::take_graphic_packs_wanted() { return false; }
 bool ExternalFrameProducer::take_graphic_pack_change(ExternalGraphicPackChange&) { return false; }
 void ExternalFrameProducer::send_graphic_packs(const std::vector<ExternalGraphicPack>&) {}
+bool ExternalFrameProducer::take_options_wanted() { return false; }
+bool ExternalFrameProducer::take_option_change(std::string&, int&) { return false; }
+void ExternalFrameProducer::send_options(const std::vector<ExternalOption>&) {}
+bool ExternalFrameProducer::take_amiibo_scan(std::string&) { return false; }
+void ExternalFrameProducer::send_amiibo_result(ExternalAmiiboResult) {}
 bool ExternalFrameProducer::take_overlay(std::vector<uint8_t>&, int&, int&) { return false; }
 bool ExternalFrameProducer::poll(bool& out_reset_requested, std::string*) {
     out_reset_requested = false;

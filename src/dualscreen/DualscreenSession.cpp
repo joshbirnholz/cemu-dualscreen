@@ -87,12 +87,14 @@ void DualscreenSession::Start(int tvWidth, int tvHeight, int padWidth, int padHe
 	info.frames_per_second = framesPerSecond;
 	// Dualscreen's menu can be drawn over this window -- see TakeOverlay() --
 	// can pause the game while it is up -- see TakePauseRequest() -- and can
-	// change the game's graphics packs -- see SetGraphicPacksHandler().
+	// change the game's graphics packs and Cemu's options, and scan an
+	// amiibo -- see SetRequestHandler().
 	info.features = ds::kExternalFeatureOverlay | ds::kExternalFeaturePause;
 	{
-		std::scoped_lock packs(m_graphicPacksMutex);
-		if (m_graphicPacksHandler)
-			info.features |= ds::kExternalFeatureGraphicPacks;
+		std::scoped_lock requests(m_requestsMutex);
+		if (m_requestHandler)
+			info.features |= ds::kExternalFeatureGraphicPacks | ds::kExternalFeatureOptions |
+							 ds::kExternalFeatureAmiibo;
 	}
 
 	std::string error;
@@ -198,7 +200,7 @@ void DualscreenSession::Poll()
 		m_pauseRequests.push_back(pause);
 	{
 		bool asked = false;
-		std::scoped_lock packs(m_graphicPacksMutex);
+		std::scoped_lock requests(m_requestsMutex);
 		if (m_producer.take_graphic_packs_wanted())
 		{
 			m_graphicPacksWanted = true;
@@ -209,8 +211,24 @@ void DualscreenSession::Poll()
 			m_graphicPackChanges.push_back(std::move(change));
 			asked = true;
 		}
-		if (asked && m_graphicPacksHandler)
-			m_graphicPacksHandler();
+		if (m_producer.take_options_wanted())
+		{
+			m_optionsWanted = true;
+			asked = true;
+		}
+		std::string id;
+		for (int choice = 0; m_producer.take_option_change(id, choice);)
+		{
+			m_optionChanges.emplace_back(std::move(id), choice);
+			asked = true;
+		}
+		for (std::string path; m_producer.take_amiibo_scan(path);)
+		{
+			m_amiiboScans.push_back(std::move(path));
+			asked = true;
+		}
+		if (asked && m_requestHandler)
+			m_requestHandler();
 	}
 	m_pointerShownAtomic.store(m_producer.pointer_shown(), std::memory_order_relaxed);
 	// Dualscreen's menu, when it is up: copied out of shared memory here,
@@ -619,15 +637,15 @@ void DualscreenSession::SendOverlayTap(float pressX, float pressY, float x, floa
 	m_producer.send_overlay_tap(pressX, pressY, x, y);
 }
 
-void DualscreenSession::SetGraphicPacksHandler(std::function<void()> handler)
+void DualscreenSession::SetRequestHandler(std::function<void()> handler)
 {
-	std::scoped_lock packs(m_graphicPacksMutex);
-	m_graphicPacksHandler = std::move(handler);
+	std::scoped_lock requests(m_requestsMutex);
+	m_requestHandler = std::move(handler);
 }
 
 bool DualscreenSession::TakeGraphicPacksWanted()
 {
-	std::scoped_lock packs(m_graphicPacksMutex);
+	std::scoped_lock requests(m_requestsMutex);
 	const bool wanted = m_graphicPacksWanted;
 	m_graphicPacksWanted = false;
 	return wanted;
@@ -635,7 +653,7 @@ bool DualscreenSession::TakeGraphicPacksWanted()
 
 bool DualscreenSession::TakeGraphicPackChange(ds::ExternalGraphicPackChange& out)
 {
-	std::scoped_lock packs(m_graphicPacksMutex);
+	std::scoped_lock requests(m_requestsMutex);
 	if (m_graphicPackChanges.empty())
 		return false;
 	out = std::move(m_graphicPackChanges.front());
@@ -649,4 +667,49 @@ void DualscreenSession::SendGraphicPacks(const std::vector<ds::ExternalGraphicPa
 	if (!m_running)
 		return;
 	m_producer.send_graphic_packs(packs);
+}
+
+bool DualscreenSession::TakeOptionsWanted()
+{
+	std::scoped_lock requests(m_requestsMutex);
+	const bool wanted = m_optionsWanted;
+	m_optionsWanted = false;
+	return wanted;
+}
+
+bool DualscreenSession::TakeOptionChange(std::string& id, int& choice)
+{
+	std::scoped_lock requests(m_requestsMutex);
+	if (m_optionChanges.empty())
+		return false;
+	id = std::move(m_optionChanges.front().first);
+	choice = m_optionChanges.front().second;
+	m_optionChanges.erase(m_optionChanges.begin());
+	return true;
+}
+
+void DualscreenSession::SendOptions(const std::vector<ds::ExternalOption>& options)
+{
+	std::scoped_lock lock(m_mutex);
+	if (!m_running)
+		return;
+	m_producer.send_options(options);
+}
+
+bool DualscreenSession::TakeAmiiboScan(std::string& path)
+{
+	std::scoped_lock requests(m_requestsMutex);
+	if (m_amiiboScans.empty())
+		return false;
+	path = std::move(m_amiiboScans.front());
+	m_amiiboScans.erase(m_amiiboScans.begin());
+	return true;
+}
+
+void DualscreenSession::SendAmiiboResult(ds::ExternalAmiiboResult result)
+{
+	std::scoped_lock lock(m_mutex);
+	if (!m_running)
+		return;
+	m_producer.send_amiibo_result(result);
 }

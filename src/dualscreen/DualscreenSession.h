@@ -210,15 +210,22 @@ public:
 		return m_pointerShownAtomic.load(std::memory_order_relaxed) ? 1 : 0;
 	}
 
-	// Dualscreen's Graphics Packs page. Packs are the UI thread's business, as
-	// they are when Cemu's own window changes them, so the session only
-	// collects what Dualscreen asked for and calls `handler` -- from the GPU
-	// thread, inside Poll(), so it must only hand the work over (CallAfter)
-	// -- and the UI thread takes the asks and answers with SendGraphicPacks().
-	void SetGraphicPacksHandler(std::function<void()> handler);
+	// What Dualscreen's menu asks of Cemu itself: the game's graphics packs,
+	// Cemu's own options, an amiibo scanned. All of it is the UI thread's
+	// business, as it is when Cemu's own windows do it, so the session only
+	// collects the asks and calls `handler` -- from the GPU thread, inside
+	// Poll(), so it must only hand the work over (CallAfter) -- and the UI
+	// thread takes them and answers. Set before the session starts, which
+	// offers Dualscreen only what something is there to answer.
+	void SetRequestHandler(std::function<void()> handler);
 	bool TakeGraphicPacksWanted();
 	bool TakeGraphicPackChange(ds::ExternalGraphicPackChange& out);
 	void SendGraphicPacks(const std::vector<ds::ExternalGraphicPack>& packs);
+	bool TakeOptionsWanted();
+	bool TakeOptionChange(std::string& id, int& choice);
+	void SendOptions(const std::vector<ds::ExternalOption>& options);
+	bool TakeAmiiboScan(std::string& path);
+	void SendAmiiboResult(ds::ExternalAmiiboResult result);
 
 private:
 	// Every method that reaches m_producer takes this, exclusively -- see the
@@ -295,11 +302,14 @@ private:
 	std::atomic<bool> m_gamePausedAtomic{false};
 	std::atomic<bool> m_stillWantedAtomic{false};
 	std::atomic<bool> m_pointerShownAtomic{true};
-	// What Dualscreen asked of the graphics packs, for the UI thread.
-	std::mutex m_graphicPacksMutex;
-	std::function<void()> m_graphicPacksHandler;
+	// What Dualscreen asked of Cemu itself, for the UI thread.
+	std::mutex m_requestsMutex;
+	std::function<void()> m_requestHandler;
 	bool m_graphicPacksWanted = false;
 	std::vector<ds::ExternalGraphicPackChange> m_graphicPackChanges;
+	bool m_optionsWanted = false;
+	std::vector<std::pair<std::string, int>> m_optionChanges;
+	std::vector<std::string> m_amiiboScans;
 	std::mutex m_overlayRectMutex;
 	float m_overlayRect[4] = {0, 0, 0, 0};
 	std::mutex m_overlayMutex;

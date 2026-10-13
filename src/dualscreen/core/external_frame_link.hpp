@@ -74,6 +74,16 @@ inline constexpr uint32_t kExternalFeaturePause = 2u;
 // GraphicPackChange.
 inline constexpr uint32_t kExternalFeatureGraphicPacks = 4u;
 
+// The producer has settings of its own worth changing from this app's menu --
+// how Cemu scales its picture, its performance overlay -- and describes them
+// itself, so one it adds later needs nothing new here: ExternalControl::
+// OptionsWanted, Options and OptionChange.
+inline constexpr uint32_t kExternalFeatureOptions = 8u;
+
+// The producer can scan an amiibo from a file, as holding a figure to a Wii U
+// GamePad does: ExternalControl::ScanAmiibo, answered with AmiiboScanned.
+inline constexpr uint32_t kExternalFeatureAmiibo = 16u;
+
 // Where a game is, as a producer that can pause it says.
 enum class ExternalPauseState : uint8_t {
     Running = 0,  // going again, after a pause or a refusal
@@ -115,6 +125,25 @@ struct ExternalGraphicPackChange {
     bool enabled = false;
     std::string category;
     std::string preset;
+};
+
+// One of the producer's own settings, as it is now: what it is called, the
+// values it can take, which it has (-1 for none of them), and whether a
+// change waits for the game to start again.
+struct ExternalOption {
+    std::string id;
+    std::string label;
+    std::vector<std::string> choices;
+    int active = -1;
+    bool restart_needed = false;
+};
+
+// How an amiibo scan went.
+enum class ExternalAmiiboResult : uint8_t {
+    Scanned = 0,
+    CannotOpen = 1,   // the file could not be read
+    NotAnAmiibo = 2,  // it was read, and is not an NFC tag's dump
+    NoGame = 3,       // nothing is running to hold it to
 };
 
 // Microseconds on a clock both ends of the link read the same: the system's
@@ -217,6 +246,21 @@ enum class ExternalControl : uint8_t {
     GraphicPacks = 19,
     // consumer -> producer, an ExternalGraphicPackChange.
     GraphicPackChange = 20,
+    // consumer -> producer, "tell me your options", answered with Options.
+    // Only to a producer whose Hello said kExternalFeatureOptions.
+    OptionsWanted = 21,
+    // producer -> consumer, every ExternalOption, as it is now: in answer to
+    // OptionsWanted, and again after each change.
+    Options = 22,
+    // consumer -> producer, "set option ID to its Nth value".
+    OptionChange = 23,
+    // consumer -> producer, "scan the amiibo in this file now", as a path on
+    // the machine both run on. Only to a producer whose Hello said
+    // kExternalFeatureAmiibo. Sent while the game runs: a Wii U game only
+    // sees a figure for the moment it is held there.
+    ScanAmiibo = 24,
+    // producer -> consumer, an ExternalAmiiboResult.
+    AmiiboScanned = 25,
 };
 
 // The keys a menu answers, by what they mean to it rather than any keyboard's
@@ -605,6 +649,24 @@ public:
     // the whole list again.
     void change_graphic_pack(const ExternalGraphicPackChange& change);
 
+    // The producer's own settings -- see kExternalFeatureOptions -- asked for,
+    // handed over once they arrive, and changed, each the way the graphics
+    // packs are.
+    bool options_supported() const {
+        return connected() && (info_.features & kExternalFeatureOptions) != 0u;
+    }
+    void request_options();
+    bool take_options(std::vector<ExternalOption>& out);
+    void change_option(const std::string& id, int choice);
+
+    // An amiibo scanned from `path` -- see kExternalFeatureAmiibo -- and what
+    // came of it, once the producer says.
+    bool amiibo_supported() const {
+        return connected() && (info_.features & kExternalFeatureAmiibo) != 0u;
+    }
+    void scan_amiibo(const std::string& path);
+    bool take_amiibo_result(ExternalAmiiboResult& out);
+
     // One player's pad, the same way send_input() sends the GamePad's -- only
     // what changed, never blocking. `connected` false means nothing is
     // feeding this player any more, which a producer should show as the
@@ -690,6 +752,8 @@ private:
     std::vector<ExternalPauseState> pause_states_;
     std::vector<std::pair<ExternalMenuKey, bool>> menu_keyboard_;
     std::optional<std::vector<ExternalGraphicPack>> graphic_packs_;
+    std::optional<std::vector<ExternalOption>> options_;
+    std::vector<ExternalAmiiboResult> amiibo_results_;
     ExternalOverlayArea* overlay_area() {
         return reinterpret_cast<ExternalOverlayArea*>(static_cast<uint8_t*>(memory_) +
                                                       ExternalOverlayArea::offset());
@@ -819,6 +883,16 @@ public:
     // Every graphics pack for the game, as it is now.
     void send_graphic_packs(const std::vector<ExternalGraphicPack>& packs);
 
+    // The consumer asking for this producer's own settings, and changing one
+    // to its `choice`th value; send_options() answers both.
+    bool take_options_wanted();
+    bool take_option_change(std::string& id, int& choice);
+    void send_options(const std::vector<ExternalOption>& options);
+
+    // An amiibo the consumer wants scanned, oldest first, and the answer.
+    bool take_amiibo_scan(std::string& path);
+    void send_amiibo_result(ExternalAmiiboResult result);
+
 private:
     ExternalSharedHeader* header() { return static_cast<ExternalSharedHeader*>(memory_); }
 
@@ -838,6 +912,9 @@ private:
     std::vector<bool> pause_requests_;
     bool graphic_packs_wanted_ = false;
     std::vector<ExternalGraphicPackChange> graphic_pack_changes_;
+    bool options_wanted_ = false;
+    std::vector<std::pair<std::string, int>> option_changes_;
+    std::vector<std::string> amiibo_scans_;
     std::vector<uint8_t> inbox_;
     ExternalInput input_;
     bool have_input_ = false;

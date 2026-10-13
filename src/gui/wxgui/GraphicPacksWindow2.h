@@ -25,7 +25,7 @@ public:
 
 	// Static so that Dualscreen's Graphics Packs page, which changes packs
 	// without this window, saves and reloads them exactly as it does -- see
-	// DualscreenGraphicPacks.cpp.
+	// DualscreenRequests.cpp.
 	static void SaveStateToConfig();
 	static void ReloadPack(const GraphicPackPtr& graphic_pack);
 	static void DeleteShadersFromRuntimeCache(const GraphicPackPtr& graphic_pack);
