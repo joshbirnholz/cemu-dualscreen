@@ -673,7 +673,7 @@ bool ExternalFrameLink::handle_message(ExternalControl kind, const std::vector<u
             return true;
         }
         case ExternalControl::PauseState:
-            if (body.empty() || body[0] > static_cast<uint8_t>(ExternalPauseState::Refused)) {
+            if (body.empty() || body[0] > static_cast<uint8_t>(ExternalPauseState::NotListening)) {
                 return true;
             }
             pause_states_.push_back(static_cast<ExternalPauseState>(body[0]));

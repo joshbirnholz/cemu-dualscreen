@@ -72,6 +72,9 @@ enum class ExternalPauseState : uint8_t {
     Running = 0,  // going again, after a pause or a refusal
     Paused = 1,   // stopped, and nothing it shows will change until it goes on
     Refused = 2,  // it cannot stop now -- a Wii U game in the middle of saving
+    // It never listens for the HOME Menu at all, so it cannot be asked: it
+    // goes on, and the request is not kept.
+    NotListening = 3,
 };
 
 // Microseconds on a clock both ends of the link read the same: the system's

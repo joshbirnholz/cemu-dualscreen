@@ -813,6 +813,18 @@ namespace coreinit
 	std::atomic<bool> s_transitionToBackground = false;
 	std::atomic<bool> s_transitionToForeground = false;
 	std::atomic<bool> s_sendHomeButtonDenied = false;
+	// When the game last asked for a system message, in milliseconds on the
+	// steady clock; 0 for never. A game that handles the HOME Menu asks every
+	// frame. One that has not asked for a second will not hear it is to
+	// pause either -- Affordable Space Adventures asks once, while it boots,
+	// and never again -- so it is not left waiting for an answer.
+	std::atomic<uint64> s_systemMessagesReadAtMs = 0;
+
+	uint64 SteadyMs()
+	{
+		return (uint64)std::chrono::duration_cast<std::chrono::milliseconds>(
+			std::chrono::steady_clock::now().time_since_epoch()).count();
+	}
 
 	// Dualscreen's quick menu pauses a game the way the Wii U's HOME Menu
 	// does: the game is told to release the foreground, stops itself at a
@@ -851,6 +863,13 @@ namespace coreinit
 		std::scoped_lock lock(s_dualscreenPauseMutex);
 		if (s_dualscreenPause != DualscreenPause::None)
 			return;
+		const uint64 readAt = s_systemMessagesReadAtMs;
+		if (readAt == 0 || SteadyMs() - readAt > 1000)
+		{
+			cemuLog_log(LogType::Force, "Dualscreen: the game doesn't listen for the HOME Menu, so it can't be paused");
+			DualscreenSession::instance().ReportPauseState(ds::ExternalPauseState::NotListening);
+			return;
+		}
 		if (s_homeButtonMenuSetByGame && !g_homeButtonMenuEnabled)
 		{
 			// What the console does while a game has the HOME Menu turned
@@ -929,6 +948,7 @@ namespace coreinit
 	// called at the beginning of OSReceiveMessage if the queue is the system message queue
 	void UpdateSystemMessageQueue()
 	{
+		s_systemMessagesReadAtMs = SteadyMs();
 		if(!OSIsInterruptEnabled())
 			return;
 		cemu_assert_debug(!__OSHasSchedulerLock());
@@ -1019,6 +1039,7 @@ namespace coreinit
 		s_transitionToForeground = false;
 		s_sendHomeButtonDenied = false;
 		s_homeButtonMenuSetByGame = false;
+		s_systemMessagesReadAtMs = 0;
 		{
 			std::scoped_lock lock(s_dualscreenPauseMutex);
 			s_dualscreenPause = DualscreenPause::None;
