@@ -1257,6 +1257,7 @@ void LatteRenderTarget_dualscreenWhilePaused()
 	s_lastShown = now;
 	session.Poll();
 	LatteRenderTarget_handleDualscreenPause();
+	const bool stillWanted = session.TakeStillWanted();
 	bool shown = false;
 	for (const ScanBufferCopy& copy : s_lastScanBufferCopy)
 	{
@@ -1265,6 +1266,14 @@ void LatteRenderTarget_dualscreenWhilePaused()
 		LatteTextureView* texView = LookUpScanBufferCopy(copy);
 		if (!texView)
 			continue;
+		if (stillWanted && (copy.renderTarget & RENDER_TARGET_TV))
+		{
+			// The lines a capture always starts with -- see
+			// LatteRenderTarget_tapDualscreen().
+			LatteTexture_UpdateDataToLatest(texView->baseTexture);
+			LatteTC_MarkTextureStillInUse(texView->baseTexture);
+			g_renderer->HandleDualscreenFrame(texView, false);
+		}
 		LatteRenderTarget_showScanBuffer(texView, copy.renderTarget);
 		shown = true;
 		// One copy to both screens is shown once.

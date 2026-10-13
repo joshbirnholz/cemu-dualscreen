@@ -539,6 +539,7 @@ bool DualscreenSession::TakePauseRequest(bool& outPause)
 void DualscreenSession::ReportPauseState(ds::ExternalPauseState state)
 {
 	m_gamePausedAtomic.store(state == ds::ExternalPauseState::Paused, std::memory_order_relaxed);
+	m_stillWantedAtomic.store(state == ds::ExternalPauseState::Paused, std::memory_order_relaxed);
 	std::scoped_lock lock(m_mutex);
 	if (!m_running)
 		return;

@@ -184,6 +184,11 @@ public:
 	// GamePaused(), which is lock-free for the render and audio threads.
 	void ReportPauseState(ds::ExternalPauseState state);
 	bool GamePaused() const { return m_gamePausedAtomic.load(std::memory_order_relaxed); }
+	// Once per pause: whether the television is still owed to Dualscreen as
+	// it was when the game stopped, which it blurs behind its menu. Sent
+	// whether or not Dualscreen asked for the television, since it does not
+	// otherwise get it while this window shows it.
+	bool TakeStillWanted() { return m_stillWantedAtomic.exchange(false, std::memory_order_relaxed); }
 
 	// Dualscreen's Pointer setting, for this window: 1 shown, 0 hidden, -1
 	// when no Dualscreen is attached to say. Only the pointer: a click still
@@ -268,6 +273,7 @@ private:
 	// Pause requests Poll() took from the link, waiting for TakePauseRequest().
 	std::vector<bool> m_pauseRequests;
 	std::atomic<bool> m_gamePausedAtomic{false};
+	std::atomic<bool> m_stillWantedAtomic{false};
 	std::atomic<bool> m_pointerShownAtomic{true};
 	std::mutex m_overlayRectMutex;
 	float m_overlayRect[4] = {0, 0, 0, 0};
