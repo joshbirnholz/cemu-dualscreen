@@ -14,6 +14,7 @@
 #include "util/Fiber/Fiber.h"
 
 #include "util/helpers/helpers.h"
+#include "DualscreenSession.h"
 
 #ifdef __arm64__
 #if defined(__clang__)
@@ -1271,6 +1272,14 @@ namespace coreinit
 				__OSCheckSystemEvents();
 				if(g_isMulticoreMode == false)
 					coreIndex = (coreIndex + 1) % 3;
+				// With nothing to run while Dualscreen has the game paused, a
+				// moment's rest between checks rather than a whole core spent
+				// spinning for the length of the menu. Half a millisecond is
+				// still far more often than the sound (every 3ms) and the
+				// game's own alarms need looking at.
+				else if (g_coreRunQueueThreadCount[coreIndex].isZero() &&
+						 DualscreenSession::instance().GamePaused())
+					std::this_thread::sleep_for(std::chrono::microseconds(500));
 			}
 			else
 			{
