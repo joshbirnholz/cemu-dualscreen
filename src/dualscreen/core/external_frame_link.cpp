@@ -471,6 +471,8 @@ void ExternalFrameLink::close() {
     menu_key_ = false;
     sent_pointer_shown_.reset();
     overlay_taps_.clear();
+    sent_pause_.reset();
+    pause_states_.clear();
 }
 
 bool ExternalFrameLink::accept_peer(std::string* error) {
@@ -495,6 +497,8 @@ bool ExternalFrameLink::accept_peer(std::string* error) {
     menu_key_ = false;
     sent_pointer_shown_.reset();
     overlay_taps_.clear();
+    sent_pause_.reset();
+    pause_states_.clear();
     // The memory goes over first, before anything is said about it, so a
     // producer never has to handle a frame announcement for memory it cannot
     // see yet.
@@ -668,6 +672,14 @@ bool ExternalFrameLink::handle_message(ExternalControl kind, const std::vector<u
             if (overlay_taps_.size() > 16) overlay_taps_.erase(overlay_taps_.begin());
             return true;
         }
+        case ExternalControl::PauseState:
+            if (body.empty() || body[0] > static_cast<uint8_t>(ExternalPauseState::Refused)) {
+                return true;
+            }
+            pause_states_.push_back(static_cast<ExternalPauseState>(body[0]));
+            // Bounded like the taps above.
+            if (pause_states_.size() > 16) pause_states_.erase(pause_states_.begin());
+            return true;
         case ExternalControl::Shutdown:
             if (error != nullptr) *error = "the game closed";
             return false;
@@ -677,6 +689,7 @@ bool ExternalFrameLink::handle_message(ExternalControl kind, const std::vector<u
         case ExternalControl::RequestScreen:
         case ExternalControl::Overlay:
         case ExternalControl::Pointer:
+        case ExternalControl::Pause:
             // Ours to send, not to receive.
             return true;
     }
@@ -901,6 +914,28 @@ bool ExternalFrameLink::take_menu_key() {
     return pressed;
 }
 
+void ExternalFrameLink::request_pause(bool pause) {
+    if (!pause_supported() || sent_pause_ == pause) {
+        return;
+    }
+    // Asked for once, when the menu opens or closes, so it waits for room
+    // rather than being dropped, as a reset does.
+    std::vector<uint8_t> body;
+    body.push_back(pause ? 1u : 0u);
+    if (send_control(ExternalControl::Pause, body)) {
+        sent_pause_ = pause;
+    }
+}
+
+bool ExternalFrameLink::take_pause_state(ExternalPauseState& out) {
+    if (pause_states_.empty()) {
+        return false;
+    }
+    out = pause_states_.front();
+    pause_states_.erase(pause_states_.begin());
+    return true;
+}
+
 void ExternalFrameLink::send_input(const ExternalInput& input) {
     // Only when it changed. A pad that is not being touched is the common case
     // and it would otherwise cost a message every frame for nothing.
@@ -1089,6 +1124,7 @@ void ExternalFrameProducer::close() {
     overlay_serial_ = 0;
     overlay_taken_serial_ = 0;
     pointer_shown_ = true;
+    pause_requests_.clear();
     inbox_.clear();
     // Same reason as the other end: whether a pad has ever arrived is a fact
     // about one session, and a fork reads it to decide whether to keep using
@@ -1265,6 +1301,26 @@ void ExternalFrameProducer::send_overlay_tap(float press_x, float press_y, float
     write_all(fd_, message.data(), message.size());
 }
 
+bool ExternalFrameProducer::take_pause_request(bool& out_pause) {
+    if (pause_requests_.empty()) {
+        return false;
+    }
+    out_pause = pause_requests_.front();
+    pause_requests_.erase(pause_requests_.begin());
+    return true;
+}
+
+void ExternalFrameProducer::send_pause_state(ExternalPauseState state) {
+    if (fd_ < 0) {
+        return;
+    }
+    // Said once per change, and the consumer waits on it, so it waits for
+    // room as the menu key does.
+    std::vector<uint8_t> message;
+    frame_message(ExternalControl::PauseState, {static_cast<uint8_t>(state)}, message);
+    write_all(fd_, message.data(), message.size());
+}
+
 bool ExternalFrameProducer::take_overlay(std::vector<uint8_t>& rgba, int& width, int& height) {
     if (memory_ == nullptr || !overlay_available() || !overlay_visible_ || overlay_slot_ < 0 ||
         overlay_serial_ == overlay_taken_serial_) {
@@ -1365,6 +1421,12 @@ bool ExternalFrameProducer::poll(bool& out_reset_requested, std::string* error) 
                 overlay_serial_ = static_cast<uint64_t>(read_u32(body.data() + 2)) |
                                   (static_cast<uint64_t>(read_u32(body.data() + 6)) << 32);
             }
+        } else if (kind == ExternalControl::Pause) {
+            if (!body.empty()) {
+                pause_requests_.push_back(body[0] != 0u);
+                // Bounded: only the latest few can matter.
+                if (pause_requests_.size() > 16) pause_requests_.erase(pause_requests_.begin());
+            }
         } else if (kind == ExternalControl::Shutdown) {
             if (error != nullptr) *error = "the far end ended the session";
             return false;
@@ -1420,6 +1482,8 @@ void ExternalFrameLink::send_overlay_state() {}
 bool ExternalFrameLink::take_menu_key() { return false; }
 void ExternalFrameLink::set_pointer_shown(bool) {}
 bool ExternalFrameLink::take_overlay_tap(float&, float&, float&, float&) { return false; }
+void ExternalFrameLink::request_pause(bool) {}
+bool ExternalFrameLink::take_pause_state(ExternalPauseState&) { return false; }
 
 ExternalFrameProducer::~ExternalFrameProducer() = default;
 void ExternalFrameProducer::close() {}
@@ -1439,6 +1503,8 @@ void ExternalFrameProducer::send_rumble(bool) {}
 void ExternalFrameProducer::send_player_rumble(int, bool) {}
 void ExternalFrameProducer::send_menu_key() {}
 void ExternalFrameProducer::send_overlay_tap(float, float, float, float) {}
+bool ExternalFrameProducer::take_pause_request(bool&) { return false; }
+void ExternalFrameProducer::send_pause_state(ExternalPauseState) {}
 bool ExternalFrameProducer::take_overlay(std::vector<uint8_t>&, int&, int&) { return false; }
 bool ExternalFrameProducer::poll(bool& out_reset_requested, std::string*) {
     out_reset_requested = false;

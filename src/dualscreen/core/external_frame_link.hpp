@@ -61,6 +61,19 @@ struct ExternalStreamInfo {
 // over the game in Cemu's window rather than behind it in this one.
 inline constexpr uint32_t kExternalFeatureOverlay = 1u;
 
+// The producer can pause the game while this app's quick menu is up, the way a
+// Wii U pauses for its HOME Menu: ExternalControl::Pause, answered with
+// ExternalControl::PauseState. The game stops itself when it is ready to, or
+// says it cannot right now, so the answer is not immediate.
+inline constexpr uint32_t kExternalFeaturePause = 2u;
+
+// Where a game is, as a producer that can pause it says.
+enum class ExternalPauseState : uint8_t {
+    Running = 0,  // going again, after a pause or a refusal
+    Paused = 1,   // stopped, and nothing it shows will change until it goes on
+    Refused = 2,  // it cannot stop now -- a Wii U game in the middle of saving
+};
+
 // Microseconds on a clock both ends of the link read the same: the system's
 // monotonic clock, which on one machine is one clock whichever process asks.
 uint64_t external_frame_clock_us();
@@ -134,6 +147,13 @@ enum class ExternalControl : uint8_t {
     // overlay's width and height in 1/65535ths. A click on the menu is the
     // menu's, not the game's, so the producer keeps it from the game.
     OverlayTap = 14,
+    // consumer -> producer, "pause the game" (1) or "let it go on" (0). Only to
+    // a producer whose Hello said kExternalFeaturePause. A pause asked for is
+    // not a pause yet: the producer answers with PauseState once the game has
+    // stopped, or refused.
+    Pause = 15,
+    // producer -> consumer, an ExternalPauseState, each time it changes.
+    PauseState = 16,
 };
 
 // How many players the link carries besides the GamePad, which is not one of
@@ -476,6 +496,15 @@ public:
     // fractions of the overlay's width and height. False when there is none.
     bool take_overlay_tap(float& press_x, float& press_y, float& x, float& y);
 
+    // Whether the producer can pause the game -- see kExternalFeaturePause.
+    bool pause_supported() const { return connected() && (info_.features & kExternalFeaturePause) != 0u; }
+    // Asks the producer to pause the game, or to let it go on. Only a change
+    // is put on the wire. Nothing has paused until take_pause_state() says so.
+    void request_pause(bool pause);
+    // What the producer has said about the game since the last call, oldest
+    // first. False when it has said nothing new.
+    bool take_pause_state(ExternalPauseState& out);
+
     // One player's pad, the same way send_input() sends the GamePad's -- only
     // what changed, never blocking. `connected` false means nothing is
     // feeding this player any more, which a producer should show as the
@@ -555,6 +584,9 @@ private:
     // The Pointer setting as last delivered; absent until one has been.
     std::optional<bool> sent_pointer_shown_;
     std::vector<std::array<float, 4>> overlay_taps_;
+    // What request_pause() last got onto the wire; absent until it has.
+    std::optional<bool> sent_pause_;
+    std::vector<ExternalPauseState> pause_states_;
     ExternalOverlayArea* overlay_area() {
         return reinterpret_cast<ExternalOverlayArea*>(static_cast<uint8_t*>(memory_) +
                                                       ExternalOverlayArea::offset());
@@ -662,6 +694,13 @@ public:
     // end: fractions of the overlay's width and height, 0 to 1.
     void send_overlay_tap(float press_x, float press_y, float x, float y);
 
+    // The consumer's requests to pause the game (true) or let it go on
+    // (false) since the last call, oldest first. False when there are none.
+    bool take_pause_request(bool& out_pause);
+    // Tells the consumer where the game is now: paused once it has stopped,
+    // refused when it cannot, running when it goes on.
+    void send_pause_state(ExternalPauseState state);
+
 private:
     ExternalSharedHeader* header() { return static_cast<ExternalSharedHeader*>(memory_); }
 
@@ -677,6 +716,7 @@ private:
     uint64_t overlay_serial_ = 0;
     uint64_t overlay_taken_serial_ = 0;
     bool pointer_shown_ = true;
+    std::vector<bool> pause_requests_;
     std::vector<uint8_t> inbox_;
     ExternalInput input_;
     bool have_input_ = false;
