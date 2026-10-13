@@ -1244,16 +1244,16 @@ void LatteRenderTarget_itHLECopyColorBufferToScanBuffer(MPTR colorBufferPtr, uin
 // drawn in it -- is only redrawn when one is flipped. So while Dualscreen has
 // the game paused, the GPU thread's idle loop shows the last frame again at
 // about the display's rate, and keeps reading the link, since nothing else
-// will until the game goes on.
-void LatteRenderTarget_dualscreenWhilePaused()
+// will until the game goes on. True while the game is paused.
+bool LatteRenderTarget_dualscreenWhilePaused()
 {
 	DualscreenSession& session = DualscreenSession::instance();
 	if (!session.GamePaused())
-		return;
+		return false;
 	static std::chrono::steady_clock::time_point s_lastShown;
 	const auto now = std::chrono::steady_clock::now();
 	if (now - s_lastShown < std::chrono::microseconds(16667))
-		return;
+		return true;
 	s_lastShown = now;
 	session.Poll();
 	LatteRenderTarget_handleDualscreenPause();
@@ -1282,6 +1282,7 @@ void LatteRenderTarget_dualscreenWhilePaused()
 	}
 	if (shown)
 		g_renderer->SwapBuffers(true, true);
+	return true;
 }
 
 

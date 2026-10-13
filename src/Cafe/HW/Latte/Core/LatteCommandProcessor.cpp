@@ -29,7 +29,7 @@ typedef uint32be* LatteCMDPtr;
 #define LatteSkipCMD(_nWords) cmd += (_nWords)
 
 void LatteThread_HandleOSScreen();
-void LatteRenderTarget_dualscreenWhilePaused();
+bool LatteRenderTarget_dualscreenWhilePaused();
 
 void LatteThread_Exit();
 
@@ -183,7 +183,8 @@ uint32 LatteCP_readU32Deprc()
 			_mm_pause();
 		}
 		LatteThread_HandleOSScreen(); // check if new frame was presented via OSScreen API
-		LatteRenderTarget_dualscreenWhilePaused(); // keep the window drawn while Dualscreen has the game paused
+		// keep the window drawn while Dualscreen has the game paused
+		const bool paused = LatteRenderTarget_dualscreenWhilePaused();
 
 		if ( TCL::TCLGPUReadRBWord(cmdWord) )
 			return cmdWord;
@@ -193,7 +194,13 @@ uint32 LatteCP_readU32Deprc()
 		// still no command data available, do some other tasks
 		LatteTiming_HandleTimedVsync();
 		LatteAsyncCommands_checkAndExecute();
-		std::this_thread::yield();
+		// A paused game sends nothing for as long as it is paused, so this
+		// waits rather than spins: a whole core given back to the machine for
+		// the length of the menu, for a millisecond more when the game goes on.
+		if (paused)
+			std::this_thread::sleep_for(std::chrono::milliseconds(1));
+		else
+			std::this_thread::yield();
 		performanceMonitor.gpuTime_idleTime.endMeasuring();
 	}
 	UNREACHABLE;
