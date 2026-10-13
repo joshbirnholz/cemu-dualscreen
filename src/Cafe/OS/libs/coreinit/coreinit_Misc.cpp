@@ -671,6 +671,10 @@ namespace coreinit
 
 	bool OSEnableHomeButtonMenu(bool enable)
 	{
+		// Said when it changes: whether Dualscreen's menu can open turns on
+		// this, and a game that turns it off for good would refuse it always.
+		if (enable != g_homeButtonMenuEnabled || !s_homeButtonMenuSetByGame)
+			cemuLog_log(LogType::Force, "Dualscreen: the game turned its HOME Menu {}", enable ? "on" : "off");
 		g_homeButtonMenuEnabled = enable;
 		s_homeButtonMenuSetByGame = true;
 		return true;
