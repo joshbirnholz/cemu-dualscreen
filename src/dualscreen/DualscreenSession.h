@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -209,6 +210,16 @@ public:
 		return m_pointerShownAtomic.load(std::memory_order_relaxed) ? 1 : 0;
 	}
 
+	// Dualscreen's Graphics Packs page. Packs are the UI thread's business, as
+	// they are when Cemu's own window changes them, so the session only
+	// collects what Dualscreen asked for and calls `handler` -- from the GPU
+	// thread, inside Poll(), so it must only hand the work over (CallAfter)
+	// -- and the UI thread takes the asks and answers with SendGraphicPacks().
+	void SetGraphicPacksHandler(std::function<void()> handler);
+	bool TakeGraphicPacksWanted();
+	bool TakeGraphicPackChange(ds::ExternalGraphicPackChange& out);
+	void SendGraphicPacks(const std::vector<ds::ExternalGraphicPack>& packs);
+
 private:
 	// Every method that reaches m_producer takes this, exclusively -- see the
 	// class comment for why a shared_mutex is not safe here.
@@ -284,6 +295,11 @@ private:
 	std::atomic<bool> m_gamePausedAtomic{false};
 	std::atomic<bool> m_stillWantedAtomic{false};
 	std::atomic<bool> m_pointerShownAtomic{true};
+	// What Dualscreen asked of the graphics packs, for the UI thread.
+	std::mutex m_graphicPacksMutex;
+	std::function<void()> m_graphicPacksHandler;
+	bool m_graphicPacksWanted = false;
+	std::vector<ds::ExternalGraphicPackChange> m_graphicPackChanges;
 	std::mutex m_overlayRectMutex;
 	float m_overlayRect[4] = {0, 0, 0, 0};
 	std::mutex m_overlayMutex;

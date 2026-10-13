@@ -63,6 +63,7 @@
 
 #include "Cafe/HW/Latte/Renderer/Renderer.h" // For renderer API checks
 #include "DualscreenSession.h"
+#include "wxgui/DualscreenGraphicPacks.h"
 
 extern WindowSystem::WindowInfo g_window_info;
 extern std::shared_mutex g_mutex;
@@ -365,6 +366,8 @@ MainWindow::MainWindow()
 	m_timer = new wxTimer(this, MAINFRAME_ID_TIMER1);
 	m_timer->Start(500);
 
+	DualscreenGraphicPacks_Install(this);
+
 	LoadSettings();
 
 	#ifdef ENABLE_DISCORD_RPC
@@ -386,6 +389,8 @@ MainWindow::MainWindow()
 
 MainWindow::~MainWindow()
 {
+	DualscreenGraphicPacks_Uninstall();
+
 	if (m_padView)
 	{
 		m_padView->Destroy();

@@ -337,6 +337,107 @@ bool bind_unix(int fd, const std::string& path, std::string* error) {
     return ::bind(fd, reinterpret_cast<sockaddr*>(&address), sizeof(address)) == 0;
 }
 
+// Reads a message body front to back, and goes on answering zeros and empty
+// strings once it has run past the end, so one check of `ok` at the end
+// covers every read: a short body from a confused peer is dropped whole
+// rather than half believed.
+struct BodyReader {
+    const std::vector<uint8_t>& body;
+    std::size_t at = 0;
+    bool ok = true;
+
+    bool has(std::size_t bytes) {
+        if (ok && body.size() - at < bytes) ok = false;
+        return ok;
+    }
+    uint8_t u8() { return has(1) ? body[at++] : 0u; }
+    uint16_t u16() {
+        if (!has(2)) return 0u;
+        const uint16_t value = read_u16(body.data() + at);
+        at += 2;
+        return value;
+    }
+    uint32_t u32() {
+        if (!has(4)) return 0u;
+        const uint32_t value = read_u32(body.data() + at);
+        at += 4;
+        return value;
+    }
+    std::string text() {
+        const uint32_t length = u32();
+        if (!has(length)) return std::string();
+        std::string value(reinterpret_cast<const char*>(body.data() + at), length);
+        at += length;
+        return value;
+    }
+};
+
+void put_text(std::vector<uint8_t>& out, const std::string& text) {
+    put_u32(out, static_cast<uint32_t>(text.size()));
+    out.insert(out.end(), text.begin(), text.end());
+}
+
+// No real game has more than a few dozen packs, or a pack more than a few
+// dozen presets; far past that is a peer that has lost its place.
+constexpr uint32_t kMaxGraphicPacks = 4096;
+constexpr uint32_t kMaxGraphicPackItems = 1024;
+
+void put_graphic_packs(std::vector<uint8_t>& out, const std::vector<ExternalGraphicPack>& packs) {
+    put_u32(out, static_cast<uint32_t>(std::min<std::size_t>(packs.size(), kMaxGraphicPacks)));
+    for (std::size_t index = 0; index < packs.size() && index < kMaxGraphicPacks; ++index) {
+        const ExternalGraphicPack& pack = packs[index];
+        put_text(out, pack.id);
+        put_text(out, pack.path);
+        put_text(out, pack.name);
+        put_text(out, pack.description);
+        out.push_back(static_cast<uint8_t>((pack.enabled ? 1u : 0u) | (pack.restart_needed ? 2u : 0u)));
+        const std::size_t choices = std::min<std::size_t>(pack.choices.size(), kMaxGraphicPackItems);
+        put_u16(out, static_cast<uint16_t>(choices));
+        for (std::size_t c = 0; c < choices; ++c) {
+            const ExternalGraphicPack::Choice& choice = pack.choices[c];
+            put_text(out, choice.category);
+            const std::size_t presets = std::min<std::size_t>(choice.presets.size(), kMaxGraphicPackItems);
+            put_u16(out, static_cast<uint16_t>(presets));
+            for (std::size_t p = 0; p < presets; ++p) put_text(out, choice.presets[p]);
+            const bool chosen = choice.active >= 0 && static_cast<std::size_t>(choice.active) < presets;
+            put_u16(out, chosen ? static_cast<uint16_t>(choice.active) : 0xFFFFu);
+        }
+    }
+}
+
+bool read_graphic_packs(const std::vector<uint8_t>& body, std::vector<ExternalGraphicPack>& out) {
+    BodyReader reader{body};
+    const uint32_t count = reader.u32();
+    if (count > kMaxGraphicPacks) return false;
+    std::vector<ExternalGraphicPack> packs;
+    for (uint32_t index = 0; index < count && reader.ok; ++index) {
+        ExternalGraphicPack pack;
+        pack.id = reader.text();
+        pack.path = reader.text();
+        pack.name = reader.text();
+        pack.description = reader.text();
+        const uint8_t flags = reader.u8();
+        pack.enabled = (flags & 1u) != 0u;
+        pack.restart_needed = (flags & 2u) != 0u;
+        const uint16_t choices = reader.u16();
+        if (choices > kMaxGraphicPackItems) return false;
+        for (uint16_t c = 0; c < choices && reader.ok; ++c) {
+            ExternalGraphicPack::Choice choice;
+            choice.category = reader.text();
+            const uint16_t presets = reader.u16();
+            if (presets > kMaxGraphicPackItems) return false;
+            for (uint16_t p = 0; p < presets && reader.ok; ++p) choice.presets.push_back(reader.text());
+            const uint16_t active = reader.u16();
+            choice.active = active < presets ? static_cast<int>(active) : -1;
+            pack.choices.push_back(std::move(choice));
+        }
+        packs.push_back(std::move(pack));
+    }
+    if (!reader.ok) return false;
+    out = std::move(packs);
+    return true;
+}
+
 }  // namespace
 
 // --- consumer ---------------------------------------------------------------
@@ -474,6 +575,7 @@ void ExternalFrameLink::close() {
     sent_pause_.reset();
     pause_states_.clear();
     menu_keyboard_.clear();
+    graphic_packs_.reset();
 }
 
 bool ExternalFrameLink::accept_peer(std::string* error) {
@@ -501,6 +603,7 @@ bool ExternalFrameLink::accept_peer(std::string* error) {
     sent_pause_.reset();
     pause_states_.clear();
     menu_keyboard_.clear();
+    graphic_packs_.reset();
     // The memory goes over first, before anything is said about it, so a
     // producer never has to handle a frame announcement for memory it cannot
     // see yet.
@@ -690,6 +793,12 @@ bool ExternalFrameLink::handle_message(ExternalControl kind, const std::vector<u
             // Bounded like the taps above.
             if (menu_keyboard_.size() > 64) menu_keyboard_.erase(menu_keyboard_.begin());
             return true;
+        case ExternalControl::GraphicPacks: {
+            // Only the newest list matters; one that does not read is dropped.
+            std::vector<ExternalGraphicPack> packs;
+            if (read_graphic_packs(body, packs)) graphic_packs_ = std::move(packs);
+            return true;
+        }
         case ExternalControl::Shutdown:
             if (error != nullptr) *error = "the game closed";
             return false;
@@ -700,6 +809,8 @@ bool ExternalFrameLink::handle_message(ExternalControl kind, const std::vector<u
         case ExternalControl::Overlay:
         case ExternalControl::Pointer:
         case ExternalControl::Pause:
+        case ExternalControl::GraphicPacksWanted:
+        case ExternalControl::GraphicPackChange:
             // Ours to send, not to receive.
             return true;
     }
@@ -958,6 +1069,31 @@ bool ExternalFrameLink::take_menu_keyboard(ExternalMenuKey& key, bool& down) {
     return true;
 }
 
+// Both asked for by a press in the menu, so both wait for room, as a reset
+// does, rather than being dropped.
+void ExternalFrameLink::request_graphic_packs() {
+    if (!graphic_packs_supported()) return;
+    send_control(ExternalControl::GraphicPacksWanted, {});
+}
+
+bool ExternalFrameLink::take_graphic_packs(std::vector<ExternalGraphicPack>& out) {
+    if (!graphic_packs_) return false;
+    out = std::move(*graphic_packs_);
+    graphic_packs_.reset();
+    return true;
+}
+
+void ExternalFrameLink::change_graphic_pack(const ExternalGraphicPackChange& change) {
+    if (!graphic_packs_supported()) return;
+    std::vector<uint8_t> body;
+    put_text(body, change.id);
+    body.push_back(static_cast<uint8_t>(change.kind));
+    body.push_back(change.enabled ? 1u : 0u);
+    put_text(body, change.category);
+    put_text(body, change.preset);
+    send_control(ExternalControl::GraphicPackChange, body);
+}
+
 void ExternalFrameLink::send_input(const ExternalInput& input) {
     // Only when it changed. A pad that is not being touched is the common case
     // and it would otherwise cost a message every frame for nothing.
@@ -1147,6 +1283,8 @@ void ExternalFrameProducer::close() {
     overlay_taken_serial_ = 0;
     pointer_shown_ = true;
     pause_requests_.clear();
+    graphic_packs_wanted_ = false;
+    graphic_pack_changes_.clear();
     inbox_.clear();
     // Same reason as the other end: whether a pad has ever arrived is a fact
     // about one session, and a fork reads it to decide whether to keep using
@@ -1343,6 +1481,31 @@ void ExternalFrameProducer::send_pause_state(ExternalPauseState state) {
     write_all(fd_, message.data(), message.size());
 }
 
+bool ExternalFrameProducer::take_graphic_packs_wanted() {
+    const bool wanted = graphic_packs_wanted_;
+    graphic_packs_wanted_ = false;
+    return wanted;
+}
+
+bool ExternalFrameProducer::take_graphic_pack_change(ExternalGraphicPackChange& out) {
+    if (graphic_pack_changes_.empty()) return false;
+    out = std::move(graphic_pack_changes_.front());
+    graphic_pack_changes_.erase(graphic_pack_changes_.begin());
+    return true;
+}
+
+void ExternalFrameProducer::send_graphic_packs(const std::vector<ExternalGraphicPack>& packs) {
+    if (fd_ < 0) {
+        return;
+    }
+    // An answer the menu is waiting on, so it waits for room.
+    std::vector<uint8_t> body;
+    put_graphic_packs(body, packs);
+    std::vector<uint8_t> message;
+    frame_message(ExternalControl::GraphicPacks, body, message);
+    write_all(fd_, message.data(), message.size());
+}
+
 void ExternalFrameProducer::send_menu_keyboard(ExternalMenuKey key, bool down) {
     if (fd_ < 0) {
         return;
@@ -1455,6 +1618,24 @@ bool ExternalFrameProducer::poll(bool& out_reset_requested, std::string* error) 
                 overlay_serial_ = static_cast<uint64_t>(read_u32(body.data() + 2)) |
                                   (static_cast<uint64_t>(read_u32(body.data() + 6)) << 32);
             }
+        } else if (kind == ExternalControl::GraphicPacksWanted) {
+            graphic_packs_wanted_ = true;
+        } else if (kind == ExternalControl::GraphicPackChange) {
+            BodyReader reader{body};
+            ExternalGraphicPackChange change;
+            change.id = reader.text();
+            const uint8_t what = reader.u8();
+            change.enabled = reader.u8() != 0u;
+            change.category = reader.text();
+            change.preset = reader.text();
+            if (reader.ok && what <= static_cast<uint8_t>(ExternalGraphicPackChange::Kind::Preset)) {
+                change.kind = static_cast<ExternalGraphicPackChange::Kind>(what);
+                graphic_pack_changes_.push_back(std::move(change));
+                // Bounded like the pause requests.
+                if (graphic_pack_changes_.size() > 64) {
+                    graphic_pack_changes_.erase(graphic_pack_changes_.begin());
+                }
+            }
         } else if (kind == ExternalControl::Pause) {
             if (!body.empty()) {
                 pause_requests_.push_back(body[0] != 0u);
@@ -1519,6 +1700,9 @@ bool ExternalFrameLink::take_overlay_tap(float&, float&, float&, float&) { retur
 void ExternalFrameLink::request_pause(bool) {}
 bool ExternalFrameLink::take_pause_state(ExternalPauseState&) { return false; }
 bool ExternalFrameLink::take_menu_keyboard(ExternalMenuKey&, bool&) { return false; }
+void ExternalFrameLink::request_graphic_packs() {}
+bool ExternalFrameLink::take_graphic_packs(std::vector<ExternalGraphicPack>&) { return false; }
+void ExternalFrameLink::change_graphic_pack(const ExternalGraphicPackChange&) {}
 
 ExternalFrameProducer::~ExternalFrameProducer() = default;
 void ExternalFrameProducer::close() {}
@@ -1541,6 +1725,9 @@ void ExternalFrameProducer::send_overlay_tap(float, float, float, float) {}
 bool ExternalFrameProducer::take_pause_request(bool&) { return false; }
 void ExternalFrameProducer::send_pause_state(ExternalPauseState) {}
 void ExternalFrameProducer::send_menu_keyboard(ExternalMenuKey, bool) {}
+bool ExternalFrameProducer::take_graphic_packs_wanted() { return false; }
+bool ExternalFrameProducer::take_graphic_pack_change(ExternalGraphicPackChange&) { return false; }
+void ExternalFrameProducer::send_graphic_packs(const std::vector<ExternalGraphicPack>&) {}
 bool ExternalFrameProducer::take_overlay(std::vector<uint8_t>&, int&, int&) { return false; }
 bool ExternalFrameProducer::poll(bool& out_reset_requested, std::string*) {
     out_reset_requested = false;

@@ -86,8 +86,14 @@ void DualscreenSession::Start(int tvWidth, int tvHeight, int padWidth, int padHe
 	info.audio_sample_rate = 48000;
 	info.frames_per_second = framesPerSecond;
 	// Dualscreen's menu can be drawn over this window -- see TakeOverlay() --
-	// and can pause the game while it is up -- see TakePauseRequest().
+	// can pause the game while it is up -- see TakePauseRequest() -- and can
+	// change the game's graphics packs -- see SetGraphicPacksHandler().
 	info.features = ds::kExternalFeatureOverlay | ds::kExternalFeaturePause;
+	{
+		std::scoped_lock packs(m_graphicPacksMutex);
+		if (m_graphicPacksHandler)
+			info.features |= ds::kExternalFeatureGraphicPacks;
+	}
 
 	std::string error;
 	if (!m_producer.connect(s_socketPath, info, &error))
@@ -190,6 +196,22 @@ void DualscreenSession::Poll()
 	}
 	for (bool pause = false; m_producer.take_pause_request(pause);)
 		m_pauseRequests.push_back(pause);
+	{
+		bool asked = false;
+		std::scoped_lock packs(m_graphicPacksMutex);
+		if (m_producer.take_graphic_packs_wanted())
+		{
+			m_graphicPacksWanted = true;
+			asked = true;
+		}
+		for (ds::ExternalGraphicPackChange change; m_producer.take_graphic_pack_change(change);)
+		{
+			m_graphicPackChanges.push_back(std::move(change));
+			asked = true;
+		}
+		if (asked && m_graphicPacksHandler)
+			m_graphicPacksHandler();
+	}
 	m_pointerShownAtomic.store(m_producer.pointer_shown(), std::memory_order_relaxed);
 	// Dualscreen's menu, when it is up: copied out of shared memory here,
 	// under m_mutex like everything else that reaches m_producer, and kept
@@ -595,4 +617,36 @@ void DualscreenSession::SendOverlayTap(float pressX, float pressY, float x, floa
 	if (!m_running)
 		return;
 	m_producer.send_overlay_tap(pressX, pressY, x, y);
+}
+
+void DualscreenSession::SetGraphicPacksHandler(std::function<void()> handler)
+{
+	std::scoped_lock packs(m_graphicPacksMutex);
+	m_graphicPacksHandler = std::move(handler);
+}
+
+bool DualscreenSession::TakeGraphicPacksWanted()
+{
+	std::scoped_lock packs(m_graphicPacksMutex);
+	const bool wanted = m_graphicPacksWanted;
+	m_graphicPacksWanted = false;
+	return wanted;
+}
+
+bool DualscreenSession::TakeGraphicPackChange(ds::ExternalGraphicPackChange& out)
+{
+	std::scoped_lock packs(m_graphicPacksMutex);
+	if (m_graphicPackChanges.empty())
+		return false;
+	out = std::move(m_graphicPackChanges.front());
+	m_graphicPackChanges.erase(m_graphicPackChanges.begin());
+	return true;
+}
+
+void DualscreenSession::SendGraphicPacks(const std::vector<ds::ExternalGraphicPack>& packs)
+{
+	std::scoped_lock lock(m_mutex);
+	if (!m_running)
+		return;
+	m_producer.send_graphic_packs(packs);
 }

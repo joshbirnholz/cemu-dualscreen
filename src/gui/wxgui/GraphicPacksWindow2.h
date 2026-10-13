@@ -23,6 +23,13 @@ public:
 	static void RefreshGraphicPacks();
 	void UpdateTitleRunning(bool running);
 
+	// Static so that Dualscreen's Graphics Packs page, which changes packs
+	// without this window, saves and reloads them exactly as it does -- see
+	// DualscreenGraphicPacks.cpp.
+	static void SaveStateToConfig();
+	static void ReloadPack(const GraphicPackPtr& graphic_pack);
+	static void DeleteShadersFromRuntimeCache(const GraphicPackPtr& graphic_pack);
+
 private:
 	std::string m_filter;
 	bool m_filter_installed_games;
@@ -71,10 +78,5 @@ private:
 	void SashPositionChanged(wxEvent& event);
 	void OnFilterUpdate(wxEvent& event);
 	void OnInstalledGamesChanged(wxCommandEvent& event);
-
-	void SaveStateToConfig();
-
-	void ReloadPack(const GraphicPackPtr& graphic_pack) const;
-	void DeleteShadersFromRuntimeCache(const GraphicPackPtr& graphic_pack) const;
 
 };

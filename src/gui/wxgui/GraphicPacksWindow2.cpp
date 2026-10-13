@@ -713,7 +713,7 @@ void GraphicPacksWindow2::UpdateTitleRunning(bool running)
 	}
 }
 
-void GraphicPacksWindow2::ReloadPack(const GraphicPackPtr& graphic_pack) const
+void GraphicPacksWindow2::ReloadPack(const GraphicPackPtr& graphic_pack)
 {
 	if (graphic_pack->HasShaders() || graphic_pack->HasPatches() || graphic_pack->HasCustomVSyncFrequency())
 	{
@@ -724,7 +724,7 @@ void GraphicPacksWindow2::ReloadPack(const GraphicPackPtr& graphic_pack) const
 	}
 }
 
-void GraphicPacksWindow2::DeleteShadersFromRuntimeCache(const GraphicPackPtr& graphic_pack) const
+void GraphicPacksWindow2::DeleteShadersFromRuntimeCache(const GraphicPackPtr& graphic_pack)
 {
 	for (const auto& shader : graphic_pack->GetCustomShaders())
 	{

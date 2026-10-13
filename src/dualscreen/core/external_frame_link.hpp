@@ -67,6 +67,13 @@ inline constexpr uint32_t kExternalFeatureOverlay = 1u;
 // says it cannot right now, so the answer is not immediate.
 inline constexpr uint32_t kExternalFeaturePause = 2u;
 
+// The producer has graphics packs for the game -- Cemu's -- and lets this app
+// list them, turn them on and off and choose their presets, so that can be
+// done with a controller from this app's menu rather than in the producer's
+// own windows: ExternalControl::GraphicPacksWanted, GraphicPacks and
+// GraphicPackChange.
+inline constexpr uint32_t kExternalFeatureGraphicPacks = 4u;
+
 // Where a game is, as a producer that can pause it says.
 enum class ExternalPauseState : uint8_t {
     Running = 0,  // going again, after a pause or a refusal
@@ -75,6 +82,39 @@ enum class ExternalPauseState : uint8_t {
     // It never listens for the HOME Menu at all, so it cannot be asked: it
     // goes on, and the request is not kept.
     NotListening = 3,
+};
+
+// One of the producer's graphics packs for the game it is playing, as it is
+// now.
+struct ExternalGraphicPack {
+    // The producer's own name for it, handed back to change it.
+    std::string id;
+    // Where it sits among the producer's packs, '/' between the levels --
+    // usually the game's name, then a group such as "Mods", then the pack.
+    std::string path;
+    std::string name;
+    std::string description;
+    bool enabled = false;
+    // A change to it shows only once the game has started again.
+    bool restart_needed = false;
+    // What can be chosen in it: each choice's name ("" for a pack with only
+    // one), the presets it offers, and which of them is chosen (-1 for none).
+    struct Choice {
+        std::string category;
+        std::vector<std::string> presets;
+        int active = -1;
+    };
+    std::vector<Choice> choices;
+};
+
+// A graphics pack turned on or off, or one of its presets chosen.
+struct ExternalGraphicPackChange {
+    enum class Kind : uint8_t { Enabled = 0, Preset = 1 };
+    std::string id;
+    Kind kind = Kind::Enabled;
+    bool enabled = false;
+    std::string category;
+    std::string preset;
 };
 
 // Microseconds on a clock both ends of the link read the same: the system's
@@ -166,6 +206,17 @@ enum class ExternalControl : uint8_t {
     // what its menu does with a key. Ups as well as downs, so a held arrow
     // can repeat on the consumer's side as one held in its own window does.
     MenuKeyboard = 17,
+    // consumer -> producer, "tell me the game's graphics packs", answered with
+    // GraphicPacks. Only to a producer whose Hello said
+    // kExternalFeatureGraphicPacks.
+    GraphicPacksWanted = 18,
+    // producer -> consumer, every graphics pack for the game, as it is now:
+    // in answer to GraphicPacksWanted, and again after each change, which
+    // can change more than the pack it was made to (a preset can hide
+    // others).
+    GraphicPacks = 19,
+    // consumer -> producer, an ExternalGraphicPackChange.
+    GraphicPackChange = 20,
 };
 
 // The keys a menu answers, by what they mean to it rather than any keyboard's
@@ -540,6 +591,20 @@ public:
     // see ExternalControl::MenuKeyboard. False when there is none.
     bool take_menu_keyboard(ExternalMenuKey& key, bool& down);
 
+    // Whether the producer has graphics packs to offer -- see
+    // kExternalFeatureGraphicPacks.
+    bool graphic_packs_supported() const {
+        return connected() && (info_.features & kExternalFeatureGraphicPacks) != 0u;
+    }
+    // Asks for the game's graphics packs, which take_graphic_packs() hands
+    // over once they arrive.
+    void request_graphic_packs();
+    // The packs, when a newer list has arrived since the last call.
+    bool take_graphic_packs(std::vector<ExternalGraphicPack>& out);
+    // Turns a pack on or off or chooses a preset; the producer answers with
+    // the whole list again.
+    void change_graphic_pack(const ExternalGraphicPackChange& change);
+
     // One player's pad, the same way send_input() sends the GamePad's -- only
     // what changed, never blocking. `connected` false means nothing is
     // feeding this player any more, which a producer should show as the
@@ -624,6 +689,7 @@ private:
     std::optional<bool> sent_pause_;
     std::vector<ExternalPauseState> pause_states_;
     std::vector<std::pair<ExternalMenuKey, bool>> menu_keyboard_;
+    std::optional<std::vector<ExternalGraphicPack>> graphic_packs_;
     ExternalOverlayArea* overlay_area() {
         return reinterpret_cast<ExternalOverlayArea*>(static_cast<uint8_t*>(memory_) +
                                                       ExternalOverlayArea::offset());
@@ -745,6 +811,14 @@ public:
     // consumer's menu over it -- see ExternalControl::MenuKeyboard.
     void send_menu_keyboard(ExternalMenuKey key, bool down);
 
+    // Whether the consumer has asked for the game's graphics packs since the
+    // last call: send_graphic_packs() answers.
+    bool take_graphic_packs_wanted();
+    // A change the consumer asked for, oldest first. False when there is none.
+    bool take_graphic_pack_change(ExternalGraphicPackChange& out);
+    // Every graphics pack for the game, as it is now.
+    void send_graphic_packs(const std::vector<ExternalGraphicPack>& packs);
+
 private:
     ExternalSharedHeader* header() { return static_cast<ExternalSharedHeader*>(memory_); }
 
@@ -762,6 +836,8 @@ private:
     uint64_t overlay_taken_serial_ = 0;
     bool pointer_shown_ = true;
     std::vector<bool> pause_requests_;
+    bool graphic_packs_wanted_ = false;
+    std::vector<ExternalGraphicPackChange> graphic_pack_changes_;
     std::vector<uint8_t> inbox_;
     ExternalInput input_;
     bool have_input_ = false;

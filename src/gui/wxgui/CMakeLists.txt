@@ -48,6 +48,8 @@ add_library(CemuWxGui STATIC
   DownloadGraphicPacksWindow.h
   DownloadCustomGraphicPackWindow.cpp
   DownloadCustomGraphicPackWindow.h
+  DualscreenGraphicPacks.cpp
+  DualscreenGraphicPacks.h
   GameProfileWindow.cpp
   GameProfileWindow.h
   GameUpdateWindow.cpp
