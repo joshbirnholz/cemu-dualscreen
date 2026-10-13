@@ -866,6 +866,25 @@ void LatteRenderTarget_getScreenImageArea(sint32* x, sint32* y, sint32* width, s
 		*fullHeight = h;
 }
 
+namespace coreinit
+{
+	void DualscreenRequestBackground();
+	void DualscreenRequestForeground();
+}
+
+// Dualscreen asking for the game to pause or go on, handed to coreinit, which
+// the session cannot reach itself -- see DualscreenSession::TakePauseRequest().
+static void LatteRenderTarget_handleDualscreenPause()
+{
+	for (bool pause = false; DualscreenSession::instance().TakePauseRequest(pause);)
+	{
+		if (pause)
+			coreinit::DualscreenRequestBackground();
+		else
+			coreinit::DualscreenRequestForeground();
+	}
+}
+
 void LatteRenderTarget_tapDualscreen(LatteTextureView* textureView, bool screenIsPad)
 {
 	// Unconditional, unlike the capture below: ShouldCapture() only knows what
@@ -873,6 +892,7 @@ void LatteRenderTarget_tapDualscreen(LatteTextureView* textureView, bool screenI
 	// currently being captured, or a shell that starts asking for a screen
 	// after a quiet spell would never be noticed asking.
 	DualscreenSession::instance().Poll();
+	LatteRenderTarget_handleDualscreenPause();
 	// Only the screen a shell actually asked for -- see ShouldCapture(). A
 	// screen nobody asked for costs nothing here: no readback, no CPU
 	// conversion, no send.
@@ -1112,15 +1132,10 @@ void LatteRenderTarget_copyToBackbuffer(LatteTextureView* textureView, bool isPa
 	g_renderer->ImguiEnd();
 }
 
-void LatteRenderTarget_itHLECopyColorBufferToScanBuffer(MPTR colorBufferPtr, uint32 colorBufferWidth, uint32 colorBufferHeight, uint32 colorBufferSliceIndex, uint32 colorBufferFormat, uint32 colorBufferPitch, Latte::E_HWTILEMODE colorBufferTilemode, uint32 colorBufferSwizzle, uint32 renderTarget)
+// The windows a screen goes in: Cemu's own GamePad window, and the main
+// window, which shows one screen or the other.
+static void LatteRenderTarget_showScanBuffer(LatteTextureView* texView, uint32 renderTarget)
 {
-	cemu_assert_debug(colorBufferSliceIndex == 0); // todo - support for non-zero slice
-	LatteTextureView* texView = LatteTC_GetTextureSliceViewOrTryCreate(colorBufferPtr, MPTR_NULL, (Latte::E_GX2SURFFMT)colorBufferFormat, colorBufferTilemode, colorBufferWidth, colorBufferHeight, 1, colorBufferPitch, colorBufferSwizzle, 0, 0, true);
-	if (!texView)
-	{
-		return;
-	}
-
 	auto getVPADScreenActive = [](size_t n) -> std::pair<bool, bool> {
 		auto controller = InputManager::instance().get_vpad_controller(n);
 		if (!controller)
@@ -1146,6 +1161,64 @@ void LatteRenderTarget_itHLECopyColorBufferToScanBuffer(MPTR colorBufferPtr, uin
 	togglePressedLast = togglePressed;
 
 	bool showDRC = swkbd_hasKeyboardInputHook() == false && (isDRCPrimary ^ altScreenRequested);
+	const bool screenIsPad = (renderTarget & RENDER_TARGET_DRC) != 0;
+
+	// Cemu's own separate GamePad window, when the player has one open.
+	if (screenIsPad && g_renderer->IsPadWindowActive())
+		LatteRenderTarget_copyToBackbuffer(texView, true);
+	// And its main window, which shows one screen or the other.
+	if (screenIsPad == showDRC)
+		LatteRenderTarget_copyToBackbuffer(texView, false);
+}
+
+// The last copy to each screen, TV and GamePad, for showing again while
+// Dualscreen has the game paused -- see LatteRenderTarget_dualscreenWhilePaused().
+// Kept as where the picture is rather than as a texture view, which the
+// texture cache is free to delete between frames.
+namespace
+{
+	struct ScanBufferCopy
+	{
+		bool valid = false;
+		MPTR colorBufferPtr = MPTR_NULL;
+		uint32 width = 0;
+		uint32 height = 0;
+		uint32 format = 0;
+		uint32 pitch = 0;
+		Latte::E_HWTILEMODE tilemode{};
+		uint32 swizzle = 0;
+		uint32 renderTarget = 0;
+	};
+	ScanBufferCopy s_lastScanBufferCopy[2];
+
+	LatteTextureView* LookUpScanBufferCopy(const ScanBufferCopy& copy)
+	{
+		return LatteTC_GetTextureSliceViewOrTryCreate(copy.colorBufferPtr, MPTR_NULL, (Latte::E_GX2SURFFMT)copy.format, copy.tilemode, copy.width, copy.height, 1, copy.pitch, copy.swizzle, 0, 0, true);
+	}
+}
+
+void LatteRenderTarget_itHLECopyColorBufferToScanBuffer(MPTR colorBufferPtr, uint32 colorBufferWidth, uint32 colorBufferHeight, uint32 colorBufferSliceIndex, uint32 colorBufferFormat, uint32 colorBufferPitch, Latte::E_HWTILEMODE colorBufferTilemode, uint32 colorBufferSwizzle, uint32 renderTarget)
+{
+	cemu_assert_debug(colorBufferSliceIndex == 0); // todo - support for non-zero slice
+	ScanBufferCopy copy;
+	copy.valid = true;
+	copy.colorBufferPtr = colorBufferPtr;
+	copy.width = colorBufferWidth;
+	copy.height = colorBufferHeight;
+	copy.format = colorBufferFormat;
+	copy.pitch = colorBufferPitch;
+	copy.tilemode = colorBufferTilemode;
+	copy.swizzle = colorBufferSwizzle;
+	copy.renderTarget = renderTarget;
+	LatteTextureView* texView = LookUpScanBufferCopy(copy);
+	if (!texView)
+	{
+		return;
+	}
+	if (renderTarget & RENDER_TARGET_TV)
+		s_lastScanBufferCopy[0] = copy;
+	if (renderTarget & RENDER_TARGET_DRC)
+		s_lastScanBufferCopy[1] = copy;
 
 	// Which of the console's two screens this texture holds. Every question
 	// below is about one of two different things -- which screen this is, and
@@ -1164,13 +1237,42 @@ void LatteRenderTarget_itHLECopyColorBufferToScanBuffer(MPTR colorBufferPtr, uin
 	// television, drawn into no window at all, was never tapped and never
 	// went anywhere.
 	LatteRenderTarget_tapDualscreen(texView, screenIsPad);
+	LatteRenderTarget_showScanBuffer(texView, renderTarget);
+}
 
-	// Cemu's own separate GamePad window, when the player has one open.
-	if (screenIsPad && g_renderer->IsPadWindowActive())
-		LatteRenderTarget_copyToBackbuffer(texView, true);
-	// And its main window, which shows one screen or the other.
-	if (screenIsPad == showDRC)
-		LatteRenderTarget_copyToBackbuffer(texView, false);
+// A paused game flips no frames, and this window -- with Dualscreen's menu
+// drawn in it -- is only redrawn when one is flipped. So while Dualscreen has
+// the game paused, the GPU thread's idle loop shows the last frame again at
+// about the display's rate, and keeps reading the link, since nothing else
+// will until the game goes on.
+void LatteRenderTarget_dualscreenWhilePaused()
+{
+	DualscreenSession& session = DualscreenSession::instance();
+	if (!session.GamePaused())
+		return;
+	static std::chrono::steady_clock::time_point s_lastShown;
+	const auto now = std::chrono::steady_clock::now();
+	if (now - s_lastShown < std::chrono::microseconds(16667))
+		return;
+	s_lastShown = now;
+	session.Poll();
+	LatteRenderTarget_handleDualscreenPause();
+	bool shown = false;
+	for (const ScanBufferCopy& copy : s_lastScanBufferCopy)
+	{
+		if (!copy.valid)
+			continue;
+		LatteTextureView* texView = LookUpScanBufferCopy(copy);
+		if (!texView)
+			continue;
+		LatteRenderTarget_showScanBuffer(texView, copy.renderTarget);
+		shown = true;
+		// One copy to both screens is shown once.
+		if ((copy.renderTarget & (RENDER_TARGET_TV | RENDER_TARGET_DRC)) == (RENDER_TARGET_TV | RENDER_TARGET_DRC))
+			break;
+	}
+	if (shown)
+		g_renderer->SwapBuffers(true, true);
 }
 
 

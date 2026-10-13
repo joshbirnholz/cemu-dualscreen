@@ -29,6 +29,7 @@ typedef uint32be* LatteCMDPtr;
 #define LatteSkipCMD(_nWords) cmd += (_nWords)
 
 void LatteThread_HandleOSScreen();
+void LatteRenderTarget_dualscreenWhilePaused();
 
 void LatteThread_Exit();
 
@@ -182,6 +183,7 @@ uint32 LatteCP_readU32Deprc()
 			_mm_pause();
 		}
 		LatteThread_HandleOSScreen(); // check if new frame was presented via OSScreen API
+		LatteRenderTarget_dualscreenWhilePaused(); // keep the window drawn while Dualscreen has the game paused
 
 		if ( TCL::TCLGPUReadRBWord(cmdWord) )
 			return cmdWord;

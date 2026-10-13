@@ -173,6 +173,18 @@ public:
 	// MapToOverlay() gives them. Dualscreen treats it as a tap on its menu.
 	void SendOverlayTap(float pressX, float pressY, float x, float y);
 
+	// Dualscreen's quick menu pausing the game, as the HOME Menu would -- see
+	// coreinit_Misc.cpp. TakePauseRequest() hands over what Dualscreen asked
+	// for (true: pause, false: go on) since the last call, oldest first, for
+	// the GPU thread to pass to coreinit right after Poll(). This lives in
+	// CemuInput's half and coreinit in CemuCafe's, so the session cannot
+	// call it itself.
+	bool TakePauseRequest(bool& outPause);
+	// Where the game is, as coreinit says. Told to Dualscreen, and kept for
+	// GamePaused(), which is lock-free for the render and audio threads.
+	void ReportPauseState(ds::ExternalPauseState state);
+	bool GamePaused() const { return m_gamePausedAtomic.load(std::memory_order_relaxed); }
+
 	// Dualscreen's Pointer setting, for this window: 1 shown, 0 hidden, -1
 	// when no Dualscreen is attached to say. Only the pointer: a click still
 	// touches the GamePad's screen either way, since on a touchscreen that is
@@ -253,6 +265,9 @@ private:
 
 	// The overlay as Poll() last took it, waiting for the renderer.
 	std::atomic<bool> m_overlayVisibleAtomic{false};
+	// Pause requests Poll() took from the link, waiting for TakePauseRequest().
+	std::vector<bool> m_pauseRequests;
+	std::atomic<bool> m_gamePausedAtomic{false};
 	std::atomic<bool> m_pointerShownAtomic{true};
 	std::mutex m_overlayRectMutex;
 	float m_overlayRect[4] = {0, 0, 0, 0};

@@ -186,6 +186,10 @@ namespace snd_core
 		tempAudioBlockCounter++;
 		if (tempAudioBlockCounter == AX_FRAMES_PER_GROUP)
 		{
+			// Silence while Dualscreen has the game paused, should its sound go
+			// on without it. Still fed, so the output does not run dry.
+			if (DualscreenSession::instance().GamePaused())
+				std::fill_n(tempTVChannelData, AX_SAMPLES_PER_3MS_48KHZ * AX_FRAMES_PER_GROUP * channels, (sint16)0);
 			if(g_tvAudio)
 			{
 				// While a shell has actually asked for this screen, it is the
@@ -369,6 +373,10 @@ namespace snd_core
 		tempDRCAudioBlockCounter++;
 		if (tempDRCAudioBlockCounter == AX_FRAMES_PER_GROUP)
 		{
+			// Silence while Dualscreen has the game paused, should its sound go
+			// on without it. Still fed, so the output does not run dry.
+			if (DualscreenSession::instance().GamePaused())
+				std::fill_n(tempDRCChannelData, AX_SAMPLES_PER_3MS_48KHZ * AX_FRAMES_PER_GROUP * channels, (sint16)0);
 			if (g_padAudio)
 			{
 				// Same reasoning as the TV path above -- while a shell has

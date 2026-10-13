@@ -6,6 +6,7 @@
 #include "Cafe/Filesystem/fsc.h"
 #include "config/LaunchSettings.h"
 #include <pugixml.hpp>
+#include "DualscreenSession.h"
 
 namespace coreinit
 {
@@ -658,6 +659,10 @@ namespace coreinit
 	/* home button menu */
 
 	bool g_homeButtonMenuEnabled = false;
+	// Whether the game has said either way. It starts out false above, which
+	// on its own would read as every game refusing the HOME Menu; only a game
+	// that turned it off is refusing it.
+	std::atomic<bool> s_homeButtonMenuSetByGame = false;
 
 	bool OSIsHomeButtonMenuEnabled()
 	{
@@ -667,6 +672,7 @@ namespace coreinit
 	bool OSEnableHomeButtonMenu(bool enable)
 	{
 		g_homeButtonMenuEnabled = enable;
+		s_homeButtonMenuSetByGame = true;
 		return true;
 	}
 
@@ -794,10 +800,121 @@ namespace coreinit
 	void OSReleaseForeground()
 	{
 		cemuLog_logDebug(LogType::Force, "OSReleaseForeground not implemented");
+		// Games that skip ProcUI call this themselves once they have stopped.
+		DualscreenForegroundReleased();
 	}
 
-	bool s_transitionToBackground = false;
-	bool s_transitionToForeground = false;
+	// Atomic because Dualscreen's requests arrive on the GPU thread, while
+	// UpdateSystemMessageQueue() runs on whichever core asks for a message.
+	std::atomic<bool> s_transitionToBackground = false;
+	std::atomic<bool> s_transitionToForeground = false;
+	std::atomic<bool> s_sendHomeButtonDenied = false;
+
+	// Dualscreen's quick menu pauses a game the way the Wii U's HOME Menu
+	// does: the game is told to release the foreground, stops itself at a
+	// safe point, and waits until told to acquire it again. Cemu cannot stop
+	// a game from outside, so this is the only pause that leaves it in a
+	// state it expects.
+	//
+	// Releasing: the release message is queued or delivered, and the game
+	// has yet to let go. Background: it has, and is waiting.
+	enum class DualscreenPause
+	{
+		None,
+		Releasing,
+		Background,
+	};
+	std::mutex s_dualscreenPauseMutex;
+	DualscreenPause s_dualscreenPause = DualscreenPause::None;
+	// Dualscreen asked for the game back before it had finished letting go.
+	bool s_dualscreenResumeWanted = false;
+
+	void SendAcquireForeground()
+	{
+		OSMessage msg{};
+		msg.data0 = stdx::to_underlying(SysMessageId::MsgAcquireForeground);
+		msg.data1 = 1; // ?
+		msg.data2 = 1; // ?
+		// Straight onto the queue rather than through s_transitionToForeground:
+		// a game in the background is already blocked receiving, and that flag
+		// is only looked at when a receive begins.
+		if (!OSSendMessage(coreinit::OSGetSystemMessageQueue(), &msg, 0))
+			cemuLog_log(LogType::Force, "Dualscreen: the system message queue is full; the game was not told to go on");
+	}
+
+	void DualscreenRequestBackground()
+	{
+		std::scoped_lock lock(s_dualscreenPauseMutex);
+		if (s_dualscreenPause != DualscreenPause::None)
+			return;
+		if (s_homeButtonMenuSetByGame && !g_homeButtonMenuEnabled)
+		{
+			// What the console does while a game has the HOME Menu turned
+			// off, which games do while saving.
+			s_sendHomeButtonDenied = true;
+			cemuLog_log(LogType::Force, "Dualscreen: the game can't be paused right now");
+			DualscreenSession::instance().ReportPauseState(ds::ExternalPauseState::Refused);
+			return;
+		}
+		s_dualscreenPause = DualscreenPause::Releasing;
+		s_dualscreenResumeWanted = false;
+		s_transitionToBackground = true;
+		cemuLog_log(LogType::Force, "Dualscreen: asking the game to pause");
+	}
+
+	void DualscreenRequestForeground()
+	{
+		std::scoped_lock lock(s_dualscreenPauseMutex);
+		if (s_dualscreenPause == DualscreenPause::Releasing)
+		{
+			if (s_transitionToBackground.exchange(false))
+			{
+				// The game never picked the message up, so it never stopped.
+				s_dualscreenPause = DualscreenPause::None;
+				cemuLog_log(LogType::Force, "Dualscreen: the game never paused; the request was withdrawn");
+				DualscreenSession::instance().ReportPauseState(ds::ExternalPauseState::Running);
+				return;
+			}
+			// It has the message and is stopping. Telling it to go on now could
+			// arrive before it lets go, leaving it in the background with
+			// nothing left to bring it back, so that waits for it to finish.
+			s_dualscreenResumeWanted = true;
+			return;
+		}
+		if (s_dualscreenPause == DualscreenPause::Background)
+		{
+			cemuLog_log(LogType::Force, "Dualscreen: letting the game go on");
+			SendAcquireForeground();
+		}
+	}
+
+	void DualscreenForegroundReleased()
+	{
+		std::scoped_lock lock(s_dualscreenPauseMutex);
+		// Also reached by ProcUI's core threads, one per core, and by
+		// transitions Dualscreen did not ask for.
+		if (s_dualscreenPause != DualscreenPause::Releasing)
+			return;
+		s_dualscreenPause = DualscreenPause::Background;
+		cemuLog_log(LogType::Force, "Dualscreen: the game paused");
+		DualscreenSession::instance().ReportPauseState(ds::ExternalPauseState::Paused);
+		if (s_dualscreenResumeWanted)
+		{
+			s_dualscreenResumeWanted = false;
+			cemuLog_log(LogType::Force, "Dualscreen: letting the game go on");
+			SendAcquireForeground();
+		}
+	}
+
+	void DualscreenForegroundAcquired()
+	{
+		std::scoped_lock lock(s_dualscreenPauseMutex);
+		if (s_dualscreenPause != DualscreenPause::Background)
+			return;
+		s_dualscreenPause = DualscreenPause::None;
+		cemuLog_log(LogType::Force, "Dualscreen: the game is going again");
+		DualscreenSession::instance().ReportPauseState(ds::ExternalPauseState::Running);
+	}
 
 	void StartBackgroundForegroundTransition()
 	{
@@ -813,15 +930,25 @@ namespace coreinit
 		cemu_assert_debug(!__OSHasSchedulerLock());
 		// normally syscall 0x2E is used to get the next message
 		// for now we just have some preliminary logic here to allow a fake transition to background & foreground
-		if(s_transitionToBackground)
+		if(s_sendHomeButtonDenied.exchange(false))
+		{
+			OSMessage msg{};
+			msg.data0 = stdx::to_underlying(SysMessageId::HomeButtonDenied);
+			if(!OSSendMessage(coreinit::OSGetSystemMessageQueue(), &msg, 0))
+				s_sendHomeButtonDenied = true;
+			return;
+		}
+		// Taken rather than read, so a Dualscreen request withdrawn at the
+		// same moment is either sent here or withdrawn there, never both.
+		if(s_transitionToBackground.exchange(false))
 		{
 			// add transition to background message
 			OSMessage msg{};
 			msg.data0 = stdx::to_underlying(SysMessageId::MsgReleaseForeground);
 			msg.data1 = 0; // 1 -> System is shutting down 0 -> Begin transitioning to background
 			OSMessageQueue* systemMessageQueue = coreinit::OSGetSystemMessageQueue();
-			if(OSSendMessage(systemMessageQueue, &msg, 0))
-				s_transitionToBackground = false;
+			if(!OSSendMessage(systemMessageQueue, &msg, 0))
+				s_transitionToBackground = true;
 			return;
 		}
 		if(s_transitionToForeground)
@@ -843,6 +970,8 @@ namespace coreinit
 	{
 		cemu_assert_debug(!__OSHasSchedulerLock());
 		cemuLog_log(LogType::Force, "Receiving message: {:08x}", (uint32)msg->data0);
+		if ((uint32)msg->data0 == stdx::to_underlying(SysMessageId::MsgAcquireForeground))
+			DualscreenForegroundAcquired();
 	}
 
 	uint32 OSDriver_Register(uint32 moduleHandle, sint32 priority, OSDriverInterface* driverCallbacks, sint32 driverId, uint32be* outUkn1, uint32be* outUkn2, uint32be* outUkn3)
@@ -884,6 +1013,13 @@ namespace coreinit
 		s_forwardConsoleLogs = LaunchSettings::ForwardConsoleLogging();
 		s_transitionToBackground = false;
 		s_transitionToForeground = false;
+		s_sendHomeButtonDenied = false;
+		s_homeButtonMenuSetByGame = false;
+		{
+			std::scoped_lock lock(s_dualscreenPauseMutex);
+			s_dualscreenPause = DualscreenPause::None;
+			s_dualscreenResumeWanted = false;
+		}
 
 		cafeExportRegister("coreinit", __os_snprintf, LogType::Placeholder);
 

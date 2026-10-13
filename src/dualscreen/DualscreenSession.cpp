@@ -85,8 +85,9 @@ void DualscreenSession::Start(int tvWidth, int tvHeight, int padWidth, int padHe
 	info.bottom_height = padHeight;
 	info.audio_sample_rate = 48000;
 	info.frames_per_second = framesPerSecond;
-	// Dualscreen's menu can be drawn over this window -- see TakeOverlay().
-	info.features = ds::kExternalFeatureOverlay;
+	// Dualscreen's menu can be drawn over this window -- see TakeOverlay() --
+	// and can pause the game while it is up -- see TakePauseRequest().
+	info.features = ds::kExternalFeatureOverlay | ds::kExternalFeaturePause;
 
 	std::string error;
 	if (!m_producer.connect(s_socketPath, info, &error))
@@ -180,8 +181,13 @@ void DualscreenSession::Poll()
 	m_requestedMaxHeightAtomic.store(0, std::memory_order_relaxed);
 		m_overlayVisibleAtomic.store(false, std::memory_order_relaxed);
 		m_pointerShownAtomic.store(true, std::memory_order_relaxed);
+		// A game Dualscreen paused, or is pausing, would otherwise wait for it
+		// for ever. coreinit ignores this when nothing is paused.
+		m_pauseRequests.assign(1, false);
 		return;
 	}
+	for (bool pause = false; m_producer.take_pause_request(pause);)
+		m_pauseRequests.push_back(pause);
 	m_pointerShownAtomic.store(m_producer.pointer_shown(), std::memory_order_relaxed);
 	// Dualscreen's menu, when it is up: copied out of shared memory here,
 	// under m_mutex like everything else that reaches m_producer, and kept
@@ -518,6 +524,25 @@ bool DualscreenSession::TakeOverlay(std::vector<uint8_t>& rgba, int& width, int&
 	height = m_overlayHeight;
 	m_overlayFresh = false;
 	return true;
+}
+
+bool DualscreenSession::TakePauseRequest(bool& outPause)
+{
+	std::scoped_lock lock(m_mutex);
+	if (m_pauseRequests.empty())
+		return false;
+	outPause = m_pauseRequests.front();
+	m_pauseRequests.erase(m_pauseRequests.begin());
+	return true;
+}
+
+void DualscreenSession::ReportPauseState(ds::ExternalPauseState state)
+{
+	m_gamePausedAtomic.store(state == ds::ExternalPauseState::Paused, std::memory_order_relaxed);
+	std::scoped_lock lock(m_mutex);
+	if (!m_running)
+		return;
+	m_producer.send_pause_state(state);
 }
 
 void DualscreenSession::SendMenuKey()

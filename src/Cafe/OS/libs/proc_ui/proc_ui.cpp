@@ -684,6 +684,9 @@ namespace proc_ui
 			cemuLog_logDebug(LogType::Force, "ProcUI: Releasing foreground");
 			OSSignalEvent(&s_eventWaitingBeforeReleaseForeground);
 			s_drawDoneReleaseCalled = false;
+			// Drawing is done and the save callbacks have run: as paused as
+			// the game is going to get.
+			coreinit::DualscreenForegroundReleased();
 		}
 		if (s_isInForeground || !isBlockingInBackground)
 		{

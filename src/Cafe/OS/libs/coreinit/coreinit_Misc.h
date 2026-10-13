@@ -13,6 +13,13 @@ namespace coreinit
 
 	void StartBackgroundForegroundTransition();
 
+	// Dualscreen's quick menu, standing in for the HOME Menu: see
+	// coreinit_Misc.cpp. Called from the GPU thread, as Dualscreen asks.
+	void DualscreenRequestBackground();
+	void DualscreenRequestForeground();
+	// ProcUI, once the game has finished letting go of the foreground.
+	void DualscreenForegroundReleased();
+
 	struct OSDriverInterface
 	{
 		MEMPTR<void> getDriverName;
