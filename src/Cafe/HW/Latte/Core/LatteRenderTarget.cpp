@@ -1266,13 +1266,16 @@ bool LatteRenderTarget_dualscreenWhilePaused()
 		LatteTextureView* texView = LookUpScanBufferCopy(copy);
 		if (!texView)
 			continue;
-		if (stillWanted && (copy.renderTarget & RENDER_TARGET_TV))
+		if (stillWanted)
 		{
 			// The lines a capture always starts with -- see
 			// LatteRenderTarget_tapDualscreen().
 			LatteTexture_UpdateDataToLatest(texView->baseTexture);
 			LatteTC_MarkTextureStillInUse(texView->baseTexture);
-			g_renderer->HandleDualscreenFrame(texView, false);
+			if (copy.renderTarget & RENDER_TARGET_TV)
+				g_renderer->HandleDualscreenFrame(texView, false);
+			if (copy.renderTarget & RENDER_TARGET_DRC)
+				g_renderer->HandleDualscreenFrame(texView, true);
 		}
 		LatteRenderTarget_showScanBuffer(texView, copy.renderTarget);
 		shown = true;
