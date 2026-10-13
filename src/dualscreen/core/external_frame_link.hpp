@@ -135,7 +135,10 @@ enum class ExternalControl : uint8_t {
     PlayerRumble = 10,
     // consumer -> producer, "draw overlay slot N (serial X) over your window",
     // or "draw nothing" -- see ExternalOverlayArea. Only to a producer whose
-    // Hello said kExternalFeatureOverlay.
+    // Hello said kExternalFeatureOverlay. Its first byte is 0 for nothing, 1
+    // for a menu, which takes the keys, clicks and pads while it is up, and 2
+    // for a notice, which only shows: the game goes on hearing them. A
+    // producer that predates 2 reads it as 1.
     Overlay = 11,
     // producer -> consumer, "the player pressed the menu key in my window" --
     // Tab or F1, the keys that open this app's own menu. Its window is the one
@@ -510,8 +513,10 @@ public:
     // Hands the producer a picture to draw over its own window: `rgba`, RGBA8
     // with straight alpha, `width` x `height` (no bigger than
     // ExternalOverlayArea's maximum). Shown until hide_overlay() or the next
-    // publish. False when the producer cannot draw one.
-    bool publish_overlay(const uint8_t* rgba, int width, int height);
+    // publish. `takes_input` false is a notice the player only reads: the
+    // game keeps its keys, clicks and pads. False when the producer cannot
+    // draw one.
+    bool publish_overlay(const uint8_t* rgba, int width, int height, bool takes_input = true);
     void hide_overlay();
     // Whether the producer's menu key was pressed since the last call.
     bool take_menu_key();
@@ -606,6 +611,7 @@ private:
     int overlay_slot_ = -1;
     uint64_t overlay_serial_ = 0;
     bool overlay_shown_ = false;
+    bool overlay_takes_input_ = true;
     // Whether the producer has yet to hear the latest of those: an Overlay
     // message that found the socket full, tried again by the next poll().
     bool overlay_unsent_ = false;
@@ -713,6 +719,9 @@ public:
     // whether this end can at all: the consumer's memory has room for one.
     bool overlay_available() const { return memory_bytes_ >= ExternalOverlayArea::end(); }
     bool overlay_visible() const { return overlay_visible_; }
+    // Whether that overlay is a menu, which the keys, clicks and pads go to
+    // while it is up, rather than a notice they pass under.
+    bool overlay_takes_input() const { return overlay_visible_ && overlay_takes_input_; }
     // The overlay's pixels, when they have changed since the last call:
     // RGBA8, straight alpha, `width` x `height`. False when nothing new has
     // arrived, or what arrived was being rewritten as it was read -- the next
@@ -747,6 +756,7 @@ private:
     std::size_t memory_bytes_ = 0;
     int next_slot_[2] = {0, 0};
     bool overlay_visible_ = false;
+    bool overlay_takes_input_ = true;
     int overlay_slot_ = -1;
     uint64_t overlay_serial_ = 0;
     uint64_t overlay_taken_serial_ = 0;

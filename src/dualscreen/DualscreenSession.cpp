@@ -130,6 +130,7 @@ void DualscreenSession::Stop()
 		return;
 	m_producer.close();
 	m_overlayVisibleAtomic.store(false, std::memory_order_relaxed);
+	m_overlayTakesInputAtomic.store(false, std::memory_order_relaxed);
 	m_pointerShownAtomic.store(true, std::memory_order_relaxed);
 	m_running = false;
 	m_requestedScreen.reset();
@@ -180,6 +181,7 @@ void DualscreenSession::Poll()
 	m_requestedMaxWidthAtomic.store(0, std::memory_order_relaxed);
 	m_requestedMaxHeightAtomic.store(0, std::memory_order_relaxed);
 		m_overlayVisibleAtomic.store(false, std::memory_order_relaxed);
+		m_overlayTakesInputAtomic.store(false, std::memory_order_relaxed);
 		m_pointerShownAtomic.store(true, std::memory_order_relaxed);
 		// A game Dualscreen paused, or is pausing, would otherwise wait for it
 		// for ever. coreinit ignores this when nothing is paused.
@@ -205,6 +207,7 @@ void DualscreenSession::Poll()
 			m_overlayFresh = true;
 		}
 		m_overlayVisibleAtomic.store(m_producer.overlay_visible(), std::memory_order_relaxed);
+		m_overlayTakesInputAtomic.store(m_producer.overlay_takes_input(), std::memory_order_relaxed);
 	}
 	// Whichever screen the shell asked for -- absent if it has asked for
 	// nothing, which is also true of a shell that has not connected past the
@@ -566,7 +569,7 @@ void DualscreenSession::SetOverlayRect(float left, float top, float right, float
 
 bool DualscreenSession::MapToOverlay(float x, float y, float& outX, float& outY)
 {
-	if (!OverlayVisible())
+	if (!OverlayTakesInput())
 		return false;
 	std::scoped_lock rect(m_overlayRectMutex);
 	const float width = m_overlayRect[2] - m_overlayRect[0];

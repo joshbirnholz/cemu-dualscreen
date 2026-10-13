@@ -833,7 +833,8 @@ bool ExternalFrameLink::send_control_best_effort(ExternalControl kind,
 
 void ExternalFrameLink::request_reset() { send_control(ExternalControl::Reset, {}); }
 
-bool ExternalFrameLink::publish_overlay(const uint8_t* rgba, int width, int height) {
+bool ExternalFrameLink::publish_overlay(const uint8_t* rgba, int width, int height,
+                                        bool takes_input) {
     if (!overlay_supported() || memory_ == nullptr || rgba == nullptr || width <= 0 ||
         height <= 0 || width > ExternalOverlayArea::kMaxWidth ||
         height > ExternalOverlayArea::kMaxHeight) {
@@ -856,6 +857,7 @@ bool ExternalFrameLink::publish_overlay(const uint8_t* rgba, int width, int heig
 
     overlay_slot_ = slot;
     overlay_shown_ = true;
+    overlay_takes_input_ = takes_input;
     overlay_unsent_ = true;
     send_overlay_state();
     return true;
@@ -881,7 +883,7 @@ void ExternalFrameLink::send_overlay_state() {
         return;
     }
     std::vector<uint8_t> body;
-    body.push_back(overlay_shown_ ? 1u : 0u);
+    body.push_back(!overlay_shown_ ? 0u : overlay_takes_input_ ? 1u : 2u);
     body.push_back(static_cast<uint8_t>(std::max(0, overlay_slot_)));
     put_u32(body, static_cast<uint32_t>(overlay_serial_ & 0xFFFFFFFFu));
     put_u32(body, static_cast<uint32_t>((overlay_serial_ >> 32) & 0xFFFFFFFFu));
@@ -1448,6 +1450,7 @@ bool ExternalFrameProducer::poll(bool& out_reset_requested, std::string* error) 
             if (body.size() >= 10 && overlay_available() &&
                 body[1] < ExternalOverlayArea::kSlots) {
                 overlay_visible_ = body[0] != 0u;
+                overlay_takes_input_ = body[0] != 2u;
                 overlay_slot_ = body[1];
                 overlay_serial_ = static_cast<uint64_t>(read_u32(body.data() + 2)) |
                                   (static_cast<uint64_t>(read_u32(body.data() + 6)) << 32);
@@ -1507,7 +1510,7 @@ bool ExternalFrameLink::handle_message(ExternalControl, const std::vector<uint8_
     return false;
 }
 bool ExternalFrameLink::send_control(ExternalControl, const std::vector<uint8_t>&) { return false; }
-bool ExternalFrameLink::publish_overlay(const uint8_t*, int, int) { return false; }
+bool ExternalFrameLink::publish_overlay(const uint8_t*, int, int, bool) { return false; }
 void ExternalFrameLink::hide_overlay() {}
 void ExternalFrameLink::send_overlay_state() {}
 bool ExternalFrameLink::take_menu_key() { return false; }

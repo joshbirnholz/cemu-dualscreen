@@ -158,6 +158,9 @@ public:
 	// hands over the pixels (RGBA8, straight alpha) when they have changed
 	// since it last did.
 	bool OverlayVisible() const { return m_overlayVisibleAtomic.load(std::memory_order_relaxed); }
+	// Whether it is the menu, which the keys, clicks and pads go to while it
+	// is up, rather than a notice the game keeps them under.
+	bool OverlayTakesInput() const { return m_overlayTakesInputAtomic.load(std::memory_order_relaxed); }
 	bool TakeOverlay(std::vector<uint8_t>& rgba, int& width, int& height);
 	// F1 in this window: Dualscreen opens or closes its menu, as it would for
 	// F1 pressed in its own. Not Tab, which Cemu holds to show the GamePad.
@@ -275,6 +278,7 @@ private:
 
 	// The overlay as Poll() last took it, waiting for the renderer.
 	std::atomic<bool> m_overlayVisibleAtomic{false};
+	std::atomic<bool> m_overlayTakesInputAtomic{false};
 	// Pause requests Poll() took from the link, waiting for TakePauseRequest().
 	std::vector<bool> m_pauseRequests;
 	std::atomic<bool> m_gamePausedAtomic{false};

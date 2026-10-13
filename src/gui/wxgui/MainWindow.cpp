@@ -1565,7 +1565,7 @@ void MainWindow::OnKeyUp(wxKeyEvent& event)
 // here is the menu's while Dualscreen's is up, and Cemu's otherwise.
 void MainWindow::OnCharHook(wxKeyEvent& event)
 {
-	if (DualscreenSession::instance().OverlayVisible() && !swkbd_hasKeyboardInputHook())
+	if (DualscreenSession::instance().OverlayTakesInput() && !swkbd_hasKeyboardInputHook())
 	{
 		if (const auto key = DualscreenMenuKeyFor(event))
 		{

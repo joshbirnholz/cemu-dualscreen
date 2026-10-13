@@ -264,7 +264,7 @@ void EmulatedController::clear_controllers()
 
 bool EmulatedController::held_for_menu() const
 {
-	if (DualscreenSession::instance().OverlayVisible())
+	if (DualscreenSession::instance().OverlayTakesInput())
 	{
 		m_held_for_menu = true;
 		return true;
