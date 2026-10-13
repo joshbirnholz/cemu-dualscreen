@@ -38,6 +38,9 @@ public:
 
 	[[nodiscard]] uint32 GetThreadQuantum() const { return m_threadQuantum; }
 	[[nodiscard]] const std::optional<CPUMode>& GetCPUMode() const { return m_cpuMode; }
+	// For Dualscreen's quick menu, which sets this one game's CPU mode
+	// without the Game Profile window.
+	void SetCPUMode(std::optional<CPUMode> mode) { m_cpuMode = mode; }
 
 	[[nodiscard]] bool IsAudioDisabled() const { return m_disableAudio; }
 

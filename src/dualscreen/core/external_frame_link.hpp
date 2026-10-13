@@ -130,12 +130,19 @@ struct ExternalGraphicPackChange {
 // One of the producer's own settings, as it is now: what it is called, the
 // values it can take, which it has (-1 for none of them), and whether a
 // change waits for the game to start again.
+//
+// `default_choice` is for a setting the producer keeps for every game alike
+// but that makes sense per game: the consumer keeps the game's choice itself,
+// sets it as each game starts, and sets this one for a game with none. -1
+// for a setting the producer already keeps per game -- Cemu's game profile's
+// -- or one that is not per game at all.
 struct ExternalOption {
     std::string id;
     std::string label;
     std::vector<std::string> choices;
     int active = -1;
     bool restart_needed = false;
+    int default_choice = -1;
 };
 
 // How an amiibo scan went.

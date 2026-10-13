@@ -452,6 +452,14 @@ void put_options(std::vector<uint8_t>& out, const std::vector<ExternalOption>& o
         const bool chosen = option.active >= 0 && static_cast<std::size_t>(option.active) < choices;
         put_u16(out, chosen ? static_cast<uint16_t>(option.active) : 0xFFFFu);
     }
+    // Each one's default after them all, so a consumer that predates them
+    // reads the list as it always did.
+    for (std::size_t index = 0; index < count; ++index) {
+        const ExternalOption& option = options[index];
+        const bool has_default = option.default_choice >= 0 &&
+                                 static_cast<std::size_t>(option.default_choice) < option.choices.size();
+        put_u16(out, has_default ? static_cast<uint16_t>(option.default_choice) : 0xFFFFu);
+    }
 }
 
 bool read_options(const std::vector<uint8_t>& body, std::vector<ExternalOption>& out) {
@@ -472,6 +480,13 @@ bool read_options(const std::vector<uint8_t>& body, std::vector<ExternalOption>&
         options.push_back(std::move(option));
     }
     if (!reader.ok) return false;
+    if (body.size() - reader.at >= options.size() * 2) {
+        for (ExternalOption& option : options) {
+            const uint16_t fallback = reader.u16();
+            option.default_choice =
+                fallback < option.choices.size() ? static_cast<int>(fallback) : -1;
+        }
+    }
     out = std::move(options);
     return true;
 }

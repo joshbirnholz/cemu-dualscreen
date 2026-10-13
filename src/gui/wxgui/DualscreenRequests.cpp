@@ -7,6 +7,7 @@
 #include "Cafe/GraphicPack/GraphicPack2.h"
 #include "Cafe/CafeSystem.h"
 #include "Cafe/OS/libs/nfc/nfc.h"
+#include "Cafe/GameProfile/GameProfile.h"
 #include "config/CemuConfig.h"
 
 #include "DualscreenSession.h"
@@ -114,10 +115,16 @@ namespace
 		return true;
 	}
 
-	// Cemu's own settings that Dualscreen's Options page shows: each with
-	// the words Dualscreen's menus use, the values it takes, and how to read
-	// and set it. All of them take effect at once, as they do from Cemu's
-	// General settings window, which only ever sets the value too.
+	// Cemu's own settings that a Wii U game's Options in Dualscreen's quick
+	// menu show: each with the words Dualscreen's menus use, the values it
+	// takes, and how to read and set it.
+	//
+	// The first few Cemu keeps for every game alike; Dualscreen keeps each
+	// game's choice and sets it as the game starts, falling back on
+	// `defaultChoice`, so they behave per game too. They take effect at once,
+	// as from Cemu's General settings window, which only ever sets the value.
+	// CPU mode is Cemu's own per game, in the game's profile, and is read
+	// when the game starts.
 	struct Option
 	{
 		const char* id;
@@ -125,7 +132,20 @@ namespace
 		std::vector<std::string> choices;
 		int (*get)();
 		void (*set)(int);
+		int defaultChoice = -1;
+		bool restartNeeded = false;
 	};
+
+	// This game's profile, read afresh: the Game Profile window may have
+	// changed it since.
+	std::optional<GameProfile> RunningGameProfile()
+	{
+		if (!CafeSystem::IsTitleRunning())
+			return std::nullopt;
+		GameProfile profile;
+		profile.Load(CafeSystem::GetForegroundTitleId());
+		return profile;
+	}
 
 	const std::vector<Option>& Options()
 	{
@@ -133,11 +153,11 @@ namespace
 			// The order of Cemu's UpscalingFilter.
 			{"upscale_filter", "Upscaling", {"Bilinear", "Bicubic", "Hermite", "Nearest neighbor"},
 			 []() { return (int)GetConfig().upscale_filter.GetValue(); },
-			 [](int choice) { GetConfig().upscale_filter = choice; }},
+			 [](int choice) { GetConfig().upscale_filter = choice; }, kBicubicFilter},
 			// The order of Cemu's FullscreenScaling.
 			{"fullscreen_scaling", "Aspect ratio", {"Original", "Stretched"},
 			 []() { return (int)GetConfig().fullscreen_scaling.GetValue(); },
-			 [](int choice) { GetConfig().fullscreen_scaling = choice; }},
+			 [](int choice) { GetConfig().fullscreen_scaling = choice; }, kKeepAspectRatio},
 			// Cemu's overlay is a position and a tick for each line; these
 			// are the few combinations worth stepping through, in the corner
 			// it was last put in, or the top left.
@@ -164,7 +184,31 @@ namespace
 				 overlay.cpu_usage = choice >= 2;
 				 overlay.ram_usage = choice >= 3;
 				 overlay.vram_usage = choice >= 3;
-			 }},
+			 }, 0},
+			// As the Game Profile window offers it, less the interpreter,
+			// which is for debugging.
+			{"cpu_mode", "CPU mode", {"Auto", "Multi-core", "Single-core"},
+			 []() {
+				 const auto profile = RunningGameProfile();
+				 if (!profile)
+					 return -1;
+				 const auto& mode = profile->GetCPUMode();
+				 if (!mode || *mode == CPUMode::Auto)
+					 return 0;
+				 if (*mode == CPUMode::MulticoreRecompiler || *mode == CPUMode::DualcoreRecompiler)
+					 return 1;
+				 return *mode == CPUMode::SinglecoreRecompiler ? 2 : -1;
+			 },
+			 [](int choice) {
+				 auto profile = RunningGameProfile();
+				 if (!profile)
+					 return;
+				 profile->SetCPUMode(choice == 1   ? CPUMode::MulticoreRecompiler
+									 : choice == 2 ? CPUMode::SinglecoreRecompiler
+												   : CPUMode::Auto);
+				 profile->Save(CafeSystem::GetForegroundTitleId());
+			 },
+			 -1, true},
 		};
 		return s_options;
 	}
@@ -178,8 +222,13 @@ namespace
 			entry.id = option.id;
 			entry.label = option.label;
 			entry.choices = option.choices;
+			// One about the running game has nothing to say without one.
+			if (option.restartNeeded && !CafeSystem::IsTitleRunning())
+				continue;
 			const int at = option.get();
 			entry.active = at >= 0 && at < (int)option.choices.size() ? at : -1;
+			entry.default_choice = option.defaultChoice;
+			entry.restart_needed = option.restartNeeded;
 			list.push_back(std::move(entry));
 		}
 		return list;
