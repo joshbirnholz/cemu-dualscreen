@@ -752,6 +752,11 @@ private:
 	// conversion it already had instead of losing it to a stricter check.
 	std::optional<bool> m_dualscreenLinearBlitSupported;
 	bool DualscreenLinearBlitSupported();
+	// Whether a float scan buffer (B10G11R11) can be blitted, filtering, to
+	// RGBA8 -- the only way it is handed over, since nothing on the CPU side
+	// unpacks it.
+	std::optional<bool> m_dualscreenFloatBlitSupported;
+	bool DualscreenFloatBlitSupported();
 	// Ensures m_dualscreenConvert[screenIndex] is a width x height image in
 	// the right colour space, (re)creating it if it is not -- the same
 	// resize-on-demand shape DualscreenReadback's own buffers use. False

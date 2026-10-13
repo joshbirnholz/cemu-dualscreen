@@ -175,6 +175,25 @@ bool VulkanRenderer::DualscreenBlitSupported()
 	return supported;
 }
 
+bool VulkanRenderer::DualscreenFloatBlitSupported()
+{
+	if (m_dualscreenFloatBlitSupported.has_value())
+		return *m_dualscreenFloatBlitSupported;
+	// Both bits at once: a blit from it at all, and a filtered one, since
+	// the same blit is what reduces the picture when the far end is smaller.
+	VkFormatProperties props;
+	vkGetPhysicalDeviceFormatProperties(m_physicalDevice, VK_FORMAT_B10G11R11_UFLOAT_PACK32, &props);
+	const VkFormatFeatureFlags needed =
+		VK_FORMAT_FEATURE_BLIT_SRC_BIT | VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT;
+	const bool supported = (props.optimalTilingFeatures & needed) == needed;
+	m_dualscreenFloatBlitSupported = supported;
+	if (!supported)
+		cemuLog_log(LogType::Force,
+					"Dualscreen: this device cannot blit a float scan buffer, so titles that use "
+					"one are not handed over");
+	return supported;
+}
+
 bool VulkanRenderer::DualscreenLinearBlitSupported()
 {
 	if (m_dualscreenLinearBlitSupported.has_value())
@@ -456,7 +475,11 @@ void VulkanRenderer::HandleDualscreenFrame(LatteTextureView* texView, bool padVi
 	// scan buffer rather than RGBA8. Same four bytes per pixel, so it needs no
 	// extra machinery here -- only DualscreenDrain reads the bits differently.
 	const bool isPacked1010102 = (format == VK_FORMAT_A2B10G10R10_UNORM_PACK32);
-	if (!isRGBA8 && !isPacked1010102)
+	// And some (Star Fox Zero) through a float one. Also four bytes, but only
+	// a blit can turn it into anything PublishScreen can carry.
+	const bool isFloat111110 = (format == VK_FORMAT_B10G11R11_UFLOAT_PACK32) &&
+							   DualscreenBlitSupported() && DualscreenFloatBlitSupported();
+	if (!isRGBA8 && !isPacked1010102 && !isFloat111110)
 	{
 		// Anything else would need the blit-to-a-temporary-image dance the
 		// screenshot path does, which is a lot of machinery for a case that has
@@ -515,7 +538,7 @@ void VulkanRenderer::HandleDualscreenFrame(LatteTextureView* texView, bool padVi
 	// blit still gets a correct picture, just not the free one.
 	const bool sourceIsSRGB = (format == VK_FORMAT_R8G8B8A8_SRGB);
 	const bool dstUsesSRGB = padView ? LatteGPUState.drcBufferUsesSRGB : LatteGPUState.tvBufferUsesSRGB;
-	const bool needsConversion = isPacked1010102 || (sourceIsSRGB != dstUsesSRGB);
+	const bool needsConversion = isPacked1010102 || isFloat111110 || (sourceIsSRGB != dstUsesSRGB);
 	// Resizing is the second reason to go through the blit, and unlike the
 	// conversions above it is not something DualscreenDrain can fall back to
 	// doing on the CPU -- a device that cannot blit simply hands the whole
@@ -527,6 +550,10 @@ void VulkanRenderer::HandleDualscreenFrame(LatteTextureView* texView, bool padVi
 	// that would produce it is really happening.
 	const sint32 outWidth = useBlit ? captureWidth : width;
 	const sint32 outHeight = useBlit ? captureHeight : height;
+	// A float picture has no unconverted way across: no blit this frame, no
+	// frame.
+	if (isFloat111110 && !useBlit)
+		return;
 
 	auto& slot = m_dualscreenReadback[screenIndex][m_dualscreenNextSlot[screenIndex]];
 	if (slot.pending.load(std::memory_order_acquire))
