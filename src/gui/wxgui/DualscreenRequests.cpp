@@ -11,6 +11,10 @@
 #include "config/CemuConfig.h"
 
 #include "DualscreenSession.h"
+#include "input/InputManager.h"
+#include "input/ControllerFactory.h"
+#include "input/emulated/WiimoteController.h"
+#include "input/api/DualScreen/DualScreenController.h"
 
 namespace
 {
@@ -134,7 +138,129 @@ namespace
 		void (*set)(int);
 		int defaultChoice = -1;
 		bool restartNeeded = false;
+		// A default worked out rather than fixed -- see PlayerTypeDefault().
+		int (*defaultOf)() = nullptr;
 	};
+
+	// What each of Dualscreen's players is to the game, in the order of
+	// kPlayerTypeChoices: a Pro Controller, a Classic Controller Pro, or a Wii
+	// Remote alone or with an attachment -- or nothing at all.
+	const std::vector<std::string> kPlayerTypeChoices = {
+		"Pro Controller", "Classic Controller", "Wii Remote", "Wii Remote + Nunchuk",
+		"Wii Remote + Classic Controller", "None"};
+	constexpr int kPlayerTypeNone = 5;
+
+	// The DualScreen controller for `player` (0 for Player 1), which is the
+	// one the shell feeds that player's pad through.
+	std::shared_ptr<ControllerBase> DualscreenPlayerController(int player)
+	{
+		const auto provider = InputManager::instance().get_api_provider(InputAPI::DualScreen);
+		if (!provider)
+			return {};
+		const std::string uuid = DualScreenController::uuid_for(player);
+		for (const auto& controller : provider->get_controllers())
+		{
+			if (controller->uuid() == uuid)
+				return controller;
+		}
+		return {};
+	}
+
+	// Which of Cemu's controller slots `player` is: the one its DualScreen
+	// controller is assigned to, or the slot after the GamePad's by number.
+	size_t SlotForPlayer(int player)
+	{
+		auto& input = InputManager::instance();
+		const std::string uuid = DualScreenController::uuid_for(player);
+		for (size_t slot = 0; slot < InputManager::kMaxController; ++slot)
+		{
+			const auto emulated = input.get_controller(slot);
+			if (!emulated)
+				continue;
+			for (const auto& controller : emulated->get_controllers())
+			{
+				if (controller->api() == InputAPI::DualScreen && controller->uuid() == uuid)
+					return slot;
+			}
+		}
+		return std::min<size_t>(player + 1, InputManager::kMaxController - 1);
+	}
+
+	int PlayerType(int player)
+	{
+		const auto emulated = InputManager::instance().get_controller(SlotForPlayer(player));
+		if (!emulated)
+			return kPlayerTypeNone;
+		switch (emulated->type())
+		{
+		case EmulatedController::Type::Pro: return 0;
+		case EmulatedController::Type::Classic: return 1;
+		case EmulatedController::Type::Wiimote:
+			switch (std::static_pointer_cast<WiimoteController>(emulated)->get_device_type())
+			{
+			case kWAPDevFreestyle:
+			case kWAPDevMPLSFreeStyle: return 3;
+			case kWAPDevClassic:
+			case kWAPDevMPLSClassic: return 4;
+			default: return 2;
+			}
+		default: return -1;  // the GamePad's slot: not a player's to say
+		}
+	}
+
+	// Made what the game's controls want for the session -- never saved over
+	// the controller profiles, so Cemu on its own is as it was. A slot that is
+	// already that keeps its own mapping; a new one gets the default mapping
+	// for whatever feeds it, as a fresh Cemu does.
+	void SetPlayerType(int player, int choice)
+	{
+		auto& input = InputManager::instance();
+		const size_t slot = SlotForPlayer(player);
+		if (choice == kPlayerTypeNone)
+		{
+			input.delete_controller(slot);
+			return;
+		}
+		const auto type = choice == 0   ? EmulatedController::Type::Pro
+						  : choice == 1 ? EmulatedController::Type::Classic
+										: EmulatedController::Type::Wiimote;
+		const auto previous = input.get_controller(slot);
+		std::vector<std::shared_ptr<ControllerBase>> feeding;
+		if (previous)
+			feeding = previous->get_controllers();
+		if (feeding.empty())
+		{
+			if (auto own = DualscreenPlayerController(player))
+				feeding.push_back(own);
+		}
+		auto emulated = ControllerFactory::CreateEmulatedController(slot, type);
+		for (const auto& controller : feeding)
+		{
+			emulated->add_controller(controller);
+			emulated->set_default_mapping(controller);
+		}
+		if (type == EmulatedController::Type::Wiimote)
+		{
+			std::static_pointer_cast<WiimoteController>(emulated)->set_device_type(
+				choice == 3 ? kWAPDevFreestyle : choice == 4 ? kWAPDevClassic : kWAPDevCore);
+		}
+		input.set_controller(emulated);
+	}
+
+	// What each player was when Cemu started -- its controller profiles, or
+	// the game profile's -- which a game Dualscreen has kept no choice for
+	// goes back to, so one game's never carries into the next.
+	int PlayerTypeDefault(int player)
+	{
+		static std::array<int, 4> s_started{-2, -2, -2, -2};
+		if (s_started[player] == -2)
+			s_started[player] = PlayerType(player);
+		return s_started[player];
+	}
+
+	template<int Player> int GetPlayerType() { return PlayerType(Player); }
+	template<int Player> void SetPlayerTypeOf(int choice) { SetPlayerType(Player, choice); }
+	template<int Player> int PlayerTypeDefaultOf() { return PlayerTypeDefault(Player); }
 
 	// This game's profile, read afresh: the Game Profile window may have
 	// changed it since.
@@ -215,6 +341,16 @@ namespace
 				 profile->Save(CafeSystem::GetForegroundTitleId());
 			 },
 			 -1, true},
+			// The game's other controllers, each one's type as this game wants
+			// it, kept for the game by Dualscreen.
+			{"player1_type", "Player 1 Controller", kPlayerTypeChoices, &GetPlayerType<0>, &SetPlayerTypeOf<0>,
+			 -1, false, &PlayerTypeDefaultOf<0>},
+			{"player2_type", "Player 2 Controller", kPlayerTypeChoices, &GetPlayerType<1>, &SetPlayerTypeOf<1>,
+			 -1, false, &PlayerTypeDefaultOf<1>},
+			{"player3_type", "Player 3 Controller", kPlayerTypeChoices, &GetPlayerType<2>, &SetPlayerTypeOf<2>,
+			 -1, false, &PlayerTypeDefaultOf<2>},
+			{"player4_type", "Player 4 Controller", kPlayerTypeChoices, &GetPlayerType<3>, &SetPlayerTypeOf<3>,
+			 -1, false, &PlayerTypeDefaultOf<3>},
 		};
 		return s_options;
 	}
@@ -233,7 +369,7 @@ namespace
 				continue;
 			const int at = option.get();
 			entry.active = at >= 0 && at < (int)option.choices.size() ? at : -1;
-			entry.default_choice = option.defaultChoice;
+			entry.default_choice = option.defaultOf ? option.defaultOf() : option.defaultChoice;
 			entry.restart_needed = option.restartNeeded;
 			list.push_back(std::move(entry));
 		}
