@@ -844,6 +844,17 @@ namespace coreinit
 	DualscreenPause s_dualscreenPause = DualscreenPause::None;
 	// Dualscreen asked for the game back before it had finished letting go.
 	bool s_dualscreenResumeWanted = false;
+	// From the game letting go until it is told to go on. A console stops a
+	// game in the background outright, its sound with it; Cemu only stops
+	// what the game stops itself, and AX went on mixing whatever voices were
+	// playing -- a cutscene's streamed sound ran on under a held picture, and
+	// came back ahead of it by as long as the menu was up.
+	std::atomic<bool> s_dualscreenSoundHeld = false;
+
+	bool DualscreenSoundHeld()
+	{
+		return s_dualscreenSoundHeld.load(std::memory_order_relaxed);
+	}
 
 	void SendAcquireForeground()
 	{
@@ -907,6 +918,7 @@ namespace coreinit
 		if (s_dualscreenPause == DualscreenPause::Background)
 		{
 			cemuLog_log(LogType::Force, "Dualscreen: letting the game go on");
+			s_dualscreenSoundHeld = false;
 			SendAcquireForeground();
 		}
 	}
@@ -926,7 +938,9 @@ namespace coreinit
 			s_dualscreenResumeWanted = false;
 			cemuLog_log(LogType::Force, "Dualscreen: letting the game go on");
 			SendAcquireForeground();
+			return;
 		}
+		s_dualscreenSoundHeld = true;
 	}
 
 	void DualscreenForegroundAcquired()
@@ -935,6 +949,7 @@ namespace coreinit
 		if (s_dualscreenPause != DualscreenPause::Background)
 			return;
 		s_dualscreenPause = DualscreenPause::None;
+		s_dualscreenSoundHeld = false;
 		cemuLog_log(LogType::Force, "Dualscreen: the game is going again");
 		DualscreenSession::instance().ReportPauseState(ds::ExternalPauseState::Running);
 	}

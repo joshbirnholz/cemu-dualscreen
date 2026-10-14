@@ -6,6 +6,12 @@
 #include "config/CemuConfig.h"
 #include "DualscreenSession.h"
 
+namespace coreinit
+{
+	// See coreinit_Misc.cpp.
+	bool DualscreenSoundHeld();
+}
+
 namespace snd_core
 {
 	uint32 numProcessedFrames = 0;
@@ -625,6 +631,23 @@ namespace snd_core
 		else
 			s_ax_interval_timer += wait_duration;
 
+
+		// Paused by Dualscreen's menu: no frames, as on a console, where a
+		// game in the background is not run at all. The timer above keeps
+		// going, so the game's sound picks up again where it was rather
+		// than hurrying to catch up.
+		static bool s_held = false;
+		if (coreinit::DualscreenSoundHeld())
+		{
+			if (!s_held)
+			{
+				s_held = true;
+				AXOut_updateDevicePlayState(false);
+				cemuLog_log(LogType::Force, "Dualscreen: the game's sound is held while it is paused");
+			}
+			return;
+		}
+		s_held = false;
 
 		if (snd_core::isInitialized())
 		{

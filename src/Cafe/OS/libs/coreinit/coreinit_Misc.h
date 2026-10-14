@@ -19,6 +19,9 @@ namespace coreinit
 	void DualscreenRequestForeground();
 	// ProcUI, once the game has finished letting go of the foreground.
 	void DualscreenForegroundReleased();
+	// Whether the game's sound is held while Dualscreen's menu has it in the
+	// background -- see AXOut_update().
+	bool DualscreenSoundHeld();
 
 	struct OSDriverInterface
 	{
