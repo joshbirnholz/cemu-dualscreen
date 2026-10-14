@@ -625,6 +625,7 @@ void ExternalFrameLink::close() {
     menu_key_ = false;
     sent_pointer_shown_.reset();
     overlay_taps_.clear();
+    overlay_pointers_.clear();
     sent_pause_.reset();
     pause_states_.clear();
     menu_keyboard_.clear();
@@ -655,6 +656,7 @@ bool ExternalFrameLink::accept_peer(std::string* error) {
     menu_key_ = false;
     sent_pointer_shown_.reset();
     overlay_taps_.clear();
+    overlay_pointers_.clear();
     sent_pause_.reset();
     pause_states_.clear();
     menu_keyboard_.clear();
@@ -832,6 +834,18 @@ bool ExternalFrameLink::handle_message(ExternalControl kind, const std::vector<u
             overlay_taps_.push_back(tap);
             // Bounded: a caller that never takes these must not grow them.
             if (overlay_taps_.size() > 16) overlay_taps_.erase(overlay_taps_.begin());
+            return true;
+        }
+        case ExternalControl::OverlayPointer: {
+            if (body.size() < 7 || body[0] > static_cast<uint8_t>(ExternalOverlayPointerKind::Wheel)) return true;
+            ExternalOverlayPointer pointer;
+            pointer.kind = static_cast<ExternalOverlayPointerKind>(body[0]);
+            pointer.x = static_cast<float>(static_cast<uint16_t>(body[1] | (body[2] << 8))) / 65535.0f;
+            pointer.y = static_cast<float>(static_cast<uint16_t>(body[3] | (body[4] << 8))) / 65535.0f;
+            pointer.wheel = static_cast<float>(static_cast<int16_t>(static_cast<uint16_t>(body[5] | (body[6] << 8)))) / 100.0f;
+            overlay_pointers_.push_back(pointer);
+            // Bounded: a caller that never takes these must not grow them.
+            if (overlay_pointers_.size() > 256) overlay_pointers_.erase(overlay_pointers_.begin());
             return true;
         }
         case ExternalControl::PauseState:
@@ -1088,6 +1102,13 @@ void ExternalFrameLink::set_pointer_shown(bool shown) {
     if (sent) {
         sent_pointer_shown_ = shown;
     }
+}
+
+bool ExternalFrameLink::take_overlay_pointer(ExternalOverlayPointer& out) {
+    if (overlay_pointers_.empty()) return false;
+    out = overlay_pointers_.front();
+    overlay_pointers_.erase(overlay_pointers_.begin());
+    return true;
 }
 
 bool ExternalFrameLink::take_overlay_tap(float& press_x, float& press_y, float& x, float& y) {
@@ -1570,6 +1591,27 @@ void ExternalFrameProducer::send_overlay_tap(float press_x, float press_y, float
     write_all(fd_, message.data(), message.size());
 }
 
+void ExternalFrameProducer::send_overlay_pointer(ExternalOverlayPointerKind kind, float x, float y,
+                                                 float wheel) {
+    if (fd_ < 0) {
+        return;
+    }
+    std::vector<uint8_t> body;
+    body.push_back(static_cast<uint8_t>(kind));
+    for (const float value : {x, y}) {
+        const auto scaled = static_cast<uint16_t>(std::clamp(value, 0.0f, 1.0f) * 65535.0f + 0.5f);
+        body.push_back(static_cast<uint8_t>(scaled & 0xFFu));
+        body.push_back(static_cast<uint8_t>(scaled >> 8));
+    }
+    const auto turned = static_cast<int16_t>(std::clamp(wheel * 100.0f, -32767.0f, 32767.0f));
+    body.push_back(static_cast<uint8_t>(static_cast<uint16_t>(turned) & 0xFFu));
+    body.push_back(static_cast<uint8_t>(static_cast<uint16_t>(turned) >> 8));
+    // What the player's hand did, so it waits for room, as a tap does.
+    std::vector<uint8_t> message;
+    frame_message(ExternalControl::OverlayPointer, body, message);
+    write_all(fd_, message.data(), message.size());
+}
+
 bool ExternalFrameProducer::take_pause_request(bool& out_pause) {
     if (pause_requests_.empty()) {
         return false;
@@ -1861,6 +1903,7 @@ void ExternalFrameLink::send_overlay_state() {}
 bool ExternalFrameLink::take_menu_key() { return false; }
 void ExternalFrameLink::set_pointer_shown(bool) {}
 bool ExternalFrameLink::take_overlay_tap(float&, float&, float&, float&) { return false; }
+bool ExternalFrameLink::take_overlay_pointer(ExternalOverlayPointer&) { return false; }
 void ExternalFrameLink::request_pause(bool) {}
 bool ExternalFrameLink::take_pause_state(ExternalPauseState&) { return false; }
 bool ExternalFrameLink::take_menu_keyboard(ExternalMenuKey&, bool&) { return false; }
@@ -1891,6 +1934,7 @@ void ExternalFrameProducer::send_rumble(bool) {}
 void ExternalFrameProducer::send_player_rumble(int, bool) {}
 void ExternalFrameProducer::send_menu_key() {}
 void ExternalFrameProducer::send_overlay_tap(float, float, float, float) {}
+void ExternalFrameProducer::send_overlay_pointer(ExternalOverlayPointerKind, float, float, float) {}
 bool ExternalFrameProducer::take_pause_request(bool&) { return false; }
 void ExternalFrameProducer::send_pause_state(ExternalPauseState) {}
 void ExternalFrameProducer::send_menu_keyboard(ExternalMenuKey, bool) {}

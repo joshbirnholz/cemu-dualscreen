@@ -176,6 +176,10 @@ public:
 	// A click or touch on the overlay: where it went down and came up, as
 	// MapToOverlay() gives them. Dualscreen treats it as a tap on its menu.
 	void SendOverlayTap(float pressX, float pressY, float x, float y);
+	// Everything the pointer does over the overlay -- down, each move, up,
+	// the wheel -- as MapToOverlay() gives where. Dualscreen drags and turns
+	// its menu's lists with it, and makes its own taps of it.
+	void SendOverlayPointer(ds::ExternalOverlayPointerKind kind, float x, float y, float wheel = 0.0f);
 	// A key of Dualscreen's menu going down or up in this window while the
 	// menu is over it -- the arrows, Enter, Escape and the like, which this
 	// window hears and Dualscreen's menu answers.

@@ -89,7 +89,10 @@ void DualscreenSession::Start(int tvWidth, int tvHeight, int padWidth, int padHe
 	// can pause the game while it is up -- see TakePauseRequest() -- and can
 	// change the game's graphics packs and Cemu's options, and scan an
 	// amiibo -- see SetRequestHandler().
-	info.features = ds::kExternalFeatureOverlay | ds::kExternalFeaturePause;
+	// And the pointer over that menu is streamed, so its lists drag and turn
+	// under a finger and the wheel -- see SendOverlayPointer().
+	info.features = ds::kExternalFeatureOverlay | ds::kExternalFeaturePause |
+					ds::kExternalFeatureOverlayPointer;
 	{
 		std::scoped_lock requests(m_requestsMutex);
 		if (m_requestHandler)
@@ -635,6 +638,15 @@ void DualscreenSession::SendOverlayTap(float pressX, float pressY, float x, floa
 	if (!m_running)
 		return;
 	m_producer.send_overlay_tap(pressX, pressY, x, y);
+}
+
+void DualscreenSession::SendOverlayPointer(ds::ExternalOverlayPointerKind kind, float x, float y,
+										   float wheel)
+{
+	std::scoped_lock lock(m_mutex);
+	if (!m_running)
+		return;
+	m_producer.send_overlay_pointer(kind, x, y, wheel);
 }
 
 void DualscreenSession::SetRequestHandler(std::function<void()> handler)

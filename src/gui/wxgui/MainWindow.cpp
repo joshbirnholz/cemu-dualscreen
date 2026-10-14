@@ -1389,9 +1389,18 @@ void MainWindow::SaveSettings()
 	g_wxConfig.Save();
 }
 
+// Whether a finger or button is held on Dualscreen's menu -- see
+// DualscreenMenuTakes(), below.
+static bool s_dualscreenPressed = false;
+static bool DualscreenMenuTakes(const wxPoint& physPos, bool down);
+
 void MainWindow::OnMouseMove(wxMouseEvent& event)
 {
 	event.Skip();
+
+	// Held on Dualscreen's menu: the move is the menu's.
+	if (s_dualscreenPressed && event.LeftIsDown())
+		DualscreenMenuTakes(ToPhys(event.GetPosition()), true);
 
 	m_last_mouse_move_time = std::chrono::steady_clock::now();
 	m_mouse_position = wxGetMousePosition();
@@ -1413,11 +1422,12 @@ void MainWindow::OnMouseMove(wxMouseEvent& event)
 }
 
 // A click or touch on Dualscreen's menu, while it is drawn over the game: the
-// menu's, so it is handed to Dualscreen as a tap and the game never sees it.
-// True when it was taken.
+// menu's, so it is handed to Dualscreen and the game never sees it -- every
+// part of it, where it went down, each place it moves to while held, and
+// where it came up, so a list drags under it -- and as a tap as well, for a
+// Dualscreen from before it read the rest. True when it was taken.
 static bool DualscreenMenuTakes(const wxPoint& physPos, bool down)
 {
-	static bool s_pressed = false;
 	static float s_pressX = 0.0f;
 	static float s_pressY = 0.0f;
 	auto& session = DualscreenSession::instance();
@@ -1425,18 +1435,27 @@ static bool DualscreenMenuTakes(const wxPoint& physPos, bool down)
 	float y = 0.0f;
 	if (!session.MapToOverlay((float)physPos.x, (float)physPos.y, x, y))
 	{
-		s_pressed = false;
+		s_dualscreenPressed = false;
 		return false;
 	}
 	if (down)
 	{
-		s_pressed = true;
-		s_pressX = x;
-		s_pressY = y;
+		if (!s_dualscreenPressed)
+		{
+			s_dualscreenPressed = true;
+			s_pressX = x;
+			s_pressY = y;
+			session.SendOverlayPointer(ds::ExternalOverlayPointerKind::Down, x, y);
+		}
+		else
+		{
+			session.SendOverlayPointer(ds::ExternalOverlayPointerKind::Move, x, y);
+		}
 	}
-	else if (s_pressed)
+	else if (s_dualscreenPressed)
 	{
-		s_pressed = false;
+		s_dualscreenPressed = false;
+		session.SendOverlayPointer(ds::ExternalOverlayPointerKind::Up, x, y);
 		session.SendOverlayTap(s_pressX, s_pressY, x, y);
 	}
 	return true;
@@ -1872,6 +1891,19 @@ void MainWindow::OnMemorySearcherClose(wxCloseEvent& event)
 void MainWindow::OnMouseWheel(wxMouseEvent& event)
 {
 	const float delta = event.GetWheelRotation(); // in 120 steps -> max reached ~480 (?)
+	// Over Dualscreen's menu: the menu's, to turn its lists.
+	{
+		float x = 0.0f;
+		float y = 0.0f;
+		const auto physPos = ToPhys(event.GetPosition());
+		if (DualscreenSession::instance().MapToOverlay((float)physPos.x, (float)physPos.y, x, y))
+		{
+			DualscreenSession::instance().SendOverlayPointer(ds::ExternalOverlayPointerKind::Wheel, x, y,
+															 delta / 120.0f);
+			event.Skip();
+			return;
+		}
+	}
 	auto& instance = InputManager::instance();
 	instance.m_mouse_wheel = (delta / 120.0f);
 

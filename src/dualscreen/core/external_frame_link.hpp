@@ -84,6 +84,13 @@ inline constexpr uint32_t kExternalFeatureOptions = 8u;
 // GamePad does: ExternalControl::ScanAmiibo, answered with AmiiboScanned.
 inline constexpr uint32_t kExternalFeatureAmiibo = 16u;
 
+// The producer streams the pointer over the overlay while it takes input --
+// ExternalControl::OverlayPointer: where a finger or button went down, each
+// place it moved to, where it came up, and the wheel -- in place of
+// OverlayTap, so a list in the menu drags and turns as it does in the
+// consumer's own window.
+inline constexpr uint32_t kExternalFeatureOverlayPointer = 32u;
+
 // Where a game is, as a producer that can pause it says.
 enum class ExternalPauseState : uint8_t {
     Running = 0,  // going again, after a pause or a refusal
@@ -268,6 +275,23 @@ enum class ExternalControl : uint8_t {
     ScanAmiibo = 24,
     // producer -> consumer, an ExternalAmiiboResult.
     AmiiboScanned = 25,
+    // producer -> consumer, the pointer over the overlay while it takes input:
+    // an ExternalOverlayPointerKind, then where, as fractions of the
+    // overlay's width and height in 1/65535ths, then for a wheel how far it
+    // turned in hundredths of a notch, positive away from the player. Only
+    // from a producer whose Hello said kExternalFeatureOverlayPointer, which
+    // sends these in place of OverlayTap.
+    OverlayPointer = 26,
+};
+
+// What the pointer over the overlay did -- see ExternalControl::OverlayPointer.
+// The order is the wire format.
+enum class ExternalOverlayPointerKind : uint8_t { Down, Move, Up, Wheel };
+struct ExternalOverlayPointer {
+    ExternalOverlayPointerKind kind = ExternalOverlayPointerKind::Move;
+    float x = 0.0f;  // 0 to 1, across the overlay
+    float y = 0.0f;
+    float wheel = 0.0f;  // notches, positive away from the player
 };
 
 // The keys a menu answers, by what they mean to it rather than any keyboard's
@@ -628,6 +652,12 @@ public:
     // A tap on the overlay, oldest first: where it went down and came up, as
     // fractions of the overlay's width and height. False when there is none.
     bool take_overlay_tap(float& press_x, float& press_y, float& x, float& y);
+    // Whether the producer streams the pointer over the overlay -- see
+    // kExternalFeatureOverlayPointer -- and what it has done, oldest first.
+    bool overlay_pointer_supported() const {
+        return connected() && (info_.features & kExternalFeatureOverlayPointer) != 0u;
+    }
+    bool take_overlay_pointer(ExternalOverlayPointer& out);
 
     // Whether the producer can pause the game -- see kExternalFeaturePause.
     bool pause_supported() const { return connected() && (info_.features & kExternalFeaturePause) != 0u; }
@@ -754,6 +784,7 @@ private:
     // The Pointer setting as last delivered; absent until one has been.
     std::optional<bool> sent_pointer_shown_;
     std::vector<std::array<float, 4>> overlay_taps_;
+    std::vector<ExternalOverlayPointer> overlay_pointers_;
     // What request_pause() last got onto the wire; absent until it has.
     std::optional<bool> sent_pause_;
     std::vector<ExternalPauseState> pause_states_;
@@ -870,6 +901,9 @@ public:
     // A tap on the overlay, as take_overlay_tap() hands it over at the other
     // end: fractions of the overlay's width and height, 0 to 1.
     void send_overlay_tap(float press_x, float press_y, float x, float y);
+    // The pointer over the overlay, as take_overlay_pointer() hands it over at
+    // the other end -- see kExternalFeatureOverlayPointer.
+    void send_overlay_pointer(ExternalOverlayPointerKind kind, float x, float y, float wheel = 0.0f);
 
     // The consumer's requests to pause the game (true) or let it go on
     // (false) since the last call, oldest first. False when there are none.
