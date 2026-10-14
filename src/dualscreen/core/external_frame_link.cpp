@@ -491,6 +491,41 @@ bool read_options(const std::vector<uint8_t>& body, std::vector<ExternalOption>&
     return true;
 }
 
+// No game's dialog says more than a screenful, or offers more than a couple
+// of buttons; far past that is a peer that has lost its place.
+constexpr uint32_t kMaxDialogText = 64 * 1024;
+constexpr uint8_t kMaxDialogButtons = 8;
+
+void put_game_dialog(std::vector<uint8_t>& out, const ExternalGameDialog& dialog) {
+    out.push_back(static_cast<uint8_t>(dialog.kind));
+    put_u32(out, dialog.serial);
+    put_text(out, dialog.title);
+    put_text(out, dialog.text);
+    const std::size_t buttons = std::min<std::size_t>(dialog.buttons.size(), kMaxDialogButtons);
+    out.push_back(static_cast<uint8_t>(buttons));
+    for (std::size_t index = 0; index < buttons; ++index) put_text(out, dialog.buttons[index]);
+    put_u32(out, dialog.max_length);
+}
+
+bool read_game_dialog(const std::vector<uint8_t>& body, ExternalGameDialog& out) {
+    BodyReader reader{body};
+    const uint8_t kind = reader.u8();
+    if (kind > static_cast<uint8_t>(ExternalGameDialogKind::Keyboard)) return false;
+    ExternalGameDialog dialog;
+    dialog.kind = static_cast<ExternalGameDialogKind>(kind);
+    dialog.serial = reader.u32();
+    dialog.title = reader.text();
+    dialog.text = reader.text();
+    if (dialog.title.size() > kMaxDialogText || dialog.text.size() > kMaxDialogText) return false;
+    const uint8_t buttons = reader.u8();
+    if (buttons > kMaxDialogButtons) return false;
+    for (uint8_t index = 0; index < buttons && reader.ok; ++index) dialog.buttons.push_back(reader.text());
+    dialog.max_length = reader.u32();
+    if (!reader.ok) return false;
+    out = std::move(dialog);
+    return true;
+}
+
 }  // namespace
 
 // --- consumer ---------------------------------------------------------------
@@ -632,6 +667,8 @@ void ExternalFrameLink::close() {
     graphic_packs_.reset();
     options_.reset();
     amiibo_results_.clear();
+    sent_game_dialogs_wanted_.reset();
+    game_dialog_.reset();
 }
 
 bool ExternalFrameLink::accept_peer(std::string* error) {
@@ -663,6 +700,8 @@ bool ExternalFrameLink::accept_peer(std::string* error) {
     graphic_packs_.reset();
     options_.reset();
     amiibo_results_.clear();
+    sent_game_dialogs_wanted_.reset();
+    game_dialog_.reset();
     // The memory goes over first, before anything is said about it, so a
     // producer never has to handle a frame announcement for memory it cannot
     // see yet.
@@ -875,6 +914,11 @@ bool ExternalFrameLink::handle_message(ExternalControl kind, const std::vector<u
             if (read_options(body, options)) options_ = std::move(options);
             return true;
         }
+        case ExternalControl::GameDialog: {
+            ExternalGameDialog dialog;
+            if (read_game_dialog(body, dialog)) game_dialog_ = std::move(dialog);
+            return true;
+        }
         case ExternalControl::AmiiboScanned:
             if (body.empty() || body[0] > static_cast<uint8_t>(ExternalAmiiboResult::NoGame)) {
                 return true;
@@ -897,6 +941,8 @@ bool ExternalFrameLink::handle_message(ExternalControl kind, const std::vector<u
         case ExternalControl::OptionsWanted:
         case ExternalControl::OptionChange:
         case ExternalControl::ScanAmiibo:
+        case ExternalControl::GameDialogsWanted:
+        case ExternalControl::GameDialogAnswer:
             // Ours to send, not to receive.
             return true;
     }
@@ -1210,6 +1256,29 @@ bool ExternalFrameLink::take_amiibo_result(ExternalAmiiboResult& out) {
     return true;
 }
 
+void ExternalFrameLink::want_game_dialogs(bool wanted) {
+    if (!game_dialogs_supported() || sent_game_dialogs_wanted_ == wanted) return;
+    if (send_control(ExternalControl::GameDialogsWanted, {static_cast<uint8_t>(wanted ? 1u : 0u)})) {
+        sent_game_dialogs_wanted_ = wanted;
+    }
+}
+
+bool ExternalFrameLink::take_game_dialog(ExternalGameDialog& out) {
+    if (!game_dialog_) return false;
+    out = std::move(*game_dialog_);
+    game_dialog_.reset();
+    return true;
+}
+
+void ExternalFrameLink::answer_game_dialog(const ExternalGameDialogAnswer& answer) {
+    if (!game_dialogs_supported()) return;
+    std::vector<uint8_t> body;
+    put_u32(body, answer.serial);
+    body.push_back(static_cast<uint8_t>(std::clamp(answer.button, 0, 255)));
+    put_text(body, answer.text);
+    send_control(ExternalControl::GameDialogAnswer, body);
+}
+
 void ExternalFrameLink::change_graphic_pack(const ExternalGraphicPackChange& change) {
     if (!graphic_packs_supported()) return;
     std::vector<uint8_t> body;
@@ -1415,6 +1484,8 @@ void ExternalFrameProducer::close() {
     options_wanted_ = false;
     option_changes_.clear();
     amiibo_scans_.clear();
+    game_dialogs_wanted_ = false;
+    game_dialog_answers_.clear();
     inbox_.clear();
     // Same reason as the other end: whether a pad has ever arrived is a fact
     // about one session, and a fork reads it to decide whether to keep using
@@ -1695,6 +1766,22 @@ void ExternalFrameProducer::send_amiibo_result(ExternalAmiiboResult result) {
     write_all(fd_, message.data(), message.size());
 }
 
+void ExternalFrameProducer::send_game_dialog(const ExternalGameDialog& dialog) {
+    if (fd_ < 0) return;
+    std::vector<uint8_t> body;
+    put_game_dialog(body, dialog);
+    std::vector<uint8_t> message;
+    frame_message(ExternalControl::GameDialog, body, message);
+    write_all(fd_, message.data(), message.size());
+}
+
+bool ExternalFrameProducer::take_game_dialog_answer(ExternalGameDialogAnswer& out) {
+    if (game_dialog_answers_.empty()) return false;
+    out = std::move(game_dialog_answers_.front());
+    game_dialog_answers_.erase(game_dialog_answers_.begin());
+    return true;
+}
+
 void ExternalFrameProducer::send_menu_keyboard(ExternalMenuKey key, bool down) {
     if (fd_ < 0) {
         return;
@@ -1817,6 +1904,18 @@ bool ExternalFrameProducer::poll(bool& out_reset_requested, std::string* error) 
                 option_changes_.emplace_back(std::move(id), static_cast<int>(choice));
                 if (option_changes_.size() > 64) option_changes_.erase(option_changes_.begin());
             }
+        } else if (kind == ExternalControl::GameDialogsWanted) {
+            if (!body.empty()) game_dialogs_wanted_ = body[0] != 0u;
+        } else if (kind == ExternalControl::GameDialogAnswer) {
+            BodyReader reader{body};
+            ExternalGameDialogAnswer answer;
+            answer.serial = reader.u32();
+            answer.button = reader.u8();
+            answer.text = reader.text();
+            if (reader.ok && answer.text.size() <= kMaxDialogText) {
+                game_dialog_answers_.push_back(std::move(answer));
+                if (game_dialog_answers_.size() > 8) game_dialog_answers_.erase(game_dialog_answers_.begin());
+            }
         } else if (kind == ExternalControl::ScanAmiibo) {
             BodyReader reader{body};
             std::string path = reader.text();
@@ -1915,6 +2014,9 @@ bool ExternalFrameLink::take_options(std::vector<ExternalOption>&) { return fals
 void ExternalFrameLink::change_option(const std::string&, int) {}
 void ExternalFrameLink::scan_amiibo(const std::string&) {}
 bool ExternalFrameLink::take_amiibo_result(ExternalAmiiboResult&) { return false; }
+void ExternalFrameLink::want_game_dialogs(bool) {}
+bool ExternalFrameLink::take_game_dialog(ExternalGameDialog&) { return false; }
+void ExternalFrameLink::answer_game_dialog(const ExternalGameDialogAnswer&) {}
 
 ExternalFrameProducer::~ExternalFrameProducer() = default;
 void ExternalFrameProducer::close() {}
@@ -1946,6 +2048,8 @@ bool ExternalFrameProducer::take_option_change(std::string&, int&) { return fals
 void ExternalFrameProducer::send_options(const std::vector<ExternalOption>&) {}
 bool ExternalFrameProducer::take_amiibo_scan(std::string&) { return false; }
 void ExternalFrameProducer::send_amiibo_result(ExternalAmiiboResult) {}
+void ExternalFrameProducer::send_game_dialog(const ExternalGameDialog&) {}
+bool ExternalFrameProducer::take_game_dialog_answer(ExternalGameDialogAnswer&) { return false; }
 bool ExternalFrameProducer::take_overlay(std::vector<uint8_t>&, int&, int&) { return false; }
 bool ExternalFrameProducer::poll(bool& out_reset_requested, std::string*) {
     out_reset_requested = false;

@@ -10,6 +10,7 @@
 #include "Cafe/OS/libs/coreinit/coreinit_Time.h"
 #include "Cafe/OS/libs/vpad/vpad.h"
 #include "OS/libs/coreinit/coreinit_DynLoad.h"
+#include "DualscreenSession.h"
 
 namespace nn
 {
@@ -352,8 +353,68 @@ namespace erreula
 			g_errEula.errEulaInstance->DoCalc();
 	}
 
+	// Whether Dualscreen has been told of the message that is up, and which.
+	static bool s_dualscreenShown = false;
+	static uint32 s_dualscreenSerial = 0;
+
+	// The message shown by Dualscreen, in place of the window below: its
+	// words and buttons as that window would have them, and the button
+	// pressed there pressed here. Only from the main window's pass.
+	static void renderForDualscreen()
+	{
+		auto& session = DualscreenSession::instance();
+		const auto& instance = g_errEula.errEulaInstance;
+		const bool visible = instance && (instance->GetState() == ErrEulaState::Appearing || instance->GetState() == ErrEulaState::Visible);
+		if (visible && !s_dualscreenShown)
+		{
+			const AppearError& appearArg = g_errEula.currentDialog;
+			ds::ExternalGameDialog dialog;
+			dialog.kind = ds::ExternalGameDialogKind::Message;
+			// Numbered apart from the keyboard's -- see swkbd.cpp.
+			dialog.serial = 0x80000000u | ++s_dualscreenSerial;
+			if (appearArg.title)
+				dialog.title = boost::nowide::narrow(GetText(appearArg.title.GetPtr()));
+			const uint32 errorCode = (uint32)appearArg.errorCode;
+			if (errorCode != 0)
+				dialog.text = fmt::format("Error Code: {:03}-{:04}", errorCode / 10000, errorCode % 10000);
+			std::string words;
+			if (appearArg.errorType != ErrorDialogType::Code)
+				words = appearArg.text ? boost::nowide::narrow(GetText(appearArg.text.GetPtr())) : "Unknown Error";
+			if (!words.empty())
+				dialog.text += (dialog.text.empty() ? "" : "\n") + words;
+			if (appearArg.errorType == ErrorDialogType::TextOneButton || appearArg.errorType == ErrorDialogType::TextTwoButton)
+				dialog.buttons.push_back(appearArg.button1Text ? boost::nowide::narrow(GetText(appearArg.button1Text.GetPtr())) : "Yes");
+			if (appearArg.errorType == ErrorDialogType::TextTwoButton)
+				dialog.buttons.push_back(appearArg.button2Text ? boost::nowide::narrow(GetText(appearArg.button2Text.GetPtr())) : "No");
+			session.ShowGameDialog(dialog);
+			s_dualscreenShown = true;
+		}
+		else if (!visible && s_dualscreenShown)
+		{
+			ds::ExternalGameDialog gone;
+			gone.serial = 0x80000000u | s_dualscreenSerial;
+			session.ShowGameDialog(gone);
+			s_dualscreenShown = false;
+		}
+		for (ds::ExternalGameDialogAnswer answer; visible && session.TakeGameDialogAnswer(0x80000000u | s_dualscreenSerial, answer);)
+		{
+			if (instance->IsDecideSelectButtonError())
+				continue;
+			instance->SetButtonSelection(answer.button == 1 ? ErrEulaInstance::BUTTON_SELECTION::RIGHT
+															: ErrEulaInstance::BUTTON_SELECTION::LEFT);
+		}
+	}
+
 	void render(bool mainWindow)
 	{
+		// Dualscreen's to show, while it wants it.
+		if (DualscreenSession::instance().TakesGameDialogs())
+		{
+			if (mainWindow)
+				renderForDualscreen();
+			return;
+		}
+		s_dualscreenShown = false;
 		if(!g_errEula.errEulaInstance)
 			return;
 		if(g_errEula.errEulaInstance->GetState() != ErrEulaState::Visible && g_errEula.errEulaInstance->GetState() != ErrEulaState::Appearing && g_errEula.errEulaInstance->GetState() != ErrEulaState::Disappearing)

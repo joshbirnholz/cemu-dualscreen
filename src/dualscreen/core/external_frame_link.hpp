@@ -90,6 +90,11 @@ inline constexpr uint32_t kExternalFeatureAmiibo = 16u;
 // OverlayTap, so a list in the menu drags and turns as it does in the
 // consumer's own window.
 inline constexpr uint32_t kExternalFeatureOverlayPointer = 32u;
+// The producer can hand the game's own dialogs -- its keyboard, its error
+// messages -- to the consumer to show in its place: ExternalControl::
+// GameDialog, answered with GameDialogAnswer. It does once the consumer has
+// said GameDialogsWanted, and draws them itself again when it says not.
+inline constexpr uint32_t kExternalFeatureGameDialogs = 64u;
 
 // Where a game is, as a producer that can pause it says.
 enum class ExternalPauseState : uint8_t {
@@ -158,6 +163,33 @@ enum class ExternalAmiiboResult : uint8_t {
     CannotOpen = 1,   // the file could not be read
     NotAnAmiibo = 2,  // it was read, and is not an NFC tag's dump
     NoGame = 3,       // nothing is running to hold it to
+};
+
+// A dialog the game put up -- see kExternalFeatureGameDialogs. The order of
+// the kinds is the wire format.
+enum class ExternalGameDialogKind : uint8_t {
+    None = 0,      // nothing is up any more
+    Message = 1,   // words and a button or two: an error, a question
+    Keyboard = 2,  // the game wants something typed
+};
+struct ExternalGameDialog {
+    ExternalGameDialogKind kind = ExternalGameDialogKind::None;
+    // A new one for each dialog put up, which its answer names.
+    uint32_t serial = 0;
+    std::string title;
+    // A message's words; what a keyboard's field holds to begin with.
+    std::string text;
+    // A message's buttons, left to right. One with none is put away with OK.
+    std::vector<std::string> buttons;
+    // How many characters a keyboard's field takes, or 0 for no limit said.
+    uint32_t max_length = 0;
+};
+struct ExternalGameDialogAnswer {
+    uint32_t serial = 0;
+    // A message's button, by its index.
+    int button = 0;
+    // A keyboard's field as accepted.
+    std::string text;
 };
 
 // Microseconds on a clock both ends of the link read the same: the system's
@@ -282,6 +314,15 @@ enum class ExternalControl : uint8_t {
     // from a producer whose Hello said kExternalFeatureOverlayPointer, which
     // sends these in place of OverlayTap.
     OverlayPointer = 26,
+    // consumer -> producer, "show me the game's dialogs rather than drawing
+    // them yourself" (1), or "draw them again" (0). Only to a producer whose
+    // Hello said kExternalFeatureGameDialogs.
+    GameDialogsWanted = 27,
+    // producer -> consumer, an ExternalGameDialog: one put up, or None once
+    // the game has put it away.
+    GameDialog = 28,
+    // consumer -> producer, an ExternalGameDialogAnswer.
+    GameDialogAnswer = 29,
 };
 
 // What the pointer over the overlay did -- see ExternalControl::OverlayPointer.
@@ -704,6 +745,15 @@ public:
     void scan_amiibo(const std::string& path);
     bool take_amiibo_result(ExternalAmiiboResult& out);
 
+    // The game's own dialogs -- see kExternalFeatureGameDialogs -- asked for,
+    // each as it is put up or away, and answered.
+    bool game_dialogs_supported() const {
+        return connected() && (info_.features & kExternalFeatureGameDialogs) != 0u;
+    }
+    void want_game_dialogs(bool wanted);
+    bool take_game_dialog(ExternalGameDialog& out);
+    void answer_game_dialog(const ExternalGameDialogAnswer& answer);
+
     // One player's pad, the same way send_input() sends the GamePad's -- only
     // what changed, never blocking. `connected` false means nothing is
     // feeding this player any more, which a producer should show as the
@@ -792,6 +842,10 @@ private:
     std::optional<std::vector<ExternalGraphicPack>> graphic_packs_;
     std::optional<std::vector<ExternalOption>> options_;
     std::vector<ExternalAmiiboResult> amiibo_results_;
+    // What want_game_dialogs() last got onto the wire; absent until it has.
+    std::optional<bool> sent_game_dialogs_wanted_;
+    // The newest dialog said, until taken.
+    std::optional<ExternalGameDialog> game_dialog_;
     ExternalOverlayArea* overlay_area() {
         return reinterpret_cast<ExternalOverlayArea*>(static_cast<uint8_t*>(memory_) +
                                                       ExternalOverlayArea::offset());
@@ -934,6 +988,13 @@ public:
     bool take_amiibo_scan(std::string& path);
     void send_amiibo_result(ExternalAmiiboResult result);
 
+    // Whether the consumer shows the game's dialogs in place of this
+    // producer -- see kExternalFeatureGameDialogs -- each one as it is put up
+    // or away, and the answers, oldest first.
+    bool game_dialogs_wanted() const { return fd_ >= 0 && game_dialogs_wanted_; }
+    void send_game_dialog(const ExternalGameDialog& dialog);
+    bool take_game_dialog_answer(ExternalGameDialogAnswer& out);
+
 private:
     ExternalSharedHeader* header() { return static_cast<ExternalSharedHeader*>(memory_); }
 
@@ -956,6 +1017,8 @@ private:
     bool options_wanted_ = false;
     std::vector<std::pair<std::string, int>> option_changes_;
     std::vector<std::string> amiibo_scans_;
+    bool game_dialogs_wanted_ = false;
+    std::vector<ExternalGameDialogAnswer> game_dialog_answers_;
     std::vector<uint8_t> inbox_;
     ExternalInput input_;
     bool have_input_ = false;

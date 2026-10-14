@@ -7,6 +7,7 @@
 #include "imgui/imgui_extension.h"
 #include "util/helpers/helpers.h"
 #include "resource/IconsFontAwesome5.h"
+#include "DualscreenSession.h"
 
 #define SWKBD_FORM_STRING_MAX_LENGTH	(4096) // counted in 16-bit characters
 
@@ -397,8 +398,72 @@ void SwkbdCalc(void* controllerInfo)
 }
 
 void swkbd_keyInput(uint32 keyCode);
+void swkbd_inputStringChanged();
+void swkbd_finishInput();
+
+// How many characters the form takes, as swkbd_keyInput() counts them.
+static sint32 swkbd_maxLength()
+{
+	if (!swkbdInternalState->keyboardOnlyMode)
+		return std::min(swkbdInternalState->maxTextLength, (sint32)SWKBD_FORM_STRING_MAX_LENGTH - 1);
+	const uint32 stringBufferSize = swkbdInternalState->keyboardArg.receiverArg.stringBufSize;
+	return stringBufferSize > 1 ? std::min((sint32)stringBufferSize - 1, (sint32)SWKBD_FORM_STRING_MAX_LENGTH - 1) : 0;
+}
+
+// Whether Dualscreen has been told of the keyboard that is up, and which it is.
+static bool s_dualscreenShown = false;
+static uint32 s_dualscreenSerial = 0;
+
+// The keyboard shown by Dualscreen, in place of the one below: told when it
+// comes up and goes, and the text typed there put in the form and accepted,
+// as Enter here would. Only from the main window's pass, once a frame.
+static void swkbd_dualscreen()
+{
+	bool& s_shown = s_dualscreenShown;
+	uint32& s_serial = s_dualscreenSerial;
+	auto& session = DualscreenSession::instance();
+	const bool active = swkbdInternalState != nullptr && swkbdInternalState->isActive;
+	if (active && !s_shown)
+	{
+		ds::ExternalGameDialog dialog;
+		dialog.kind = ds::ExternalGameDialogKind::Keyboard;
+		dialog.serial = ++s_serial;
+		dialog.text = boost::nowide::narrow(std::wstring(swkbdInternalState->formStringBuffer, swkbdInternalState->formStringLength));
+		dialog.max_length = (uint32)std::max(0, swkbd_maxLength());
+		session.ShowGameDialog(dialog);
+		s_shown = true;
+	}
+	else if (!active && s_shown)
+	{
+		ds::ExternalGameDialog gone;
+		gone.serial = s_serial;
+		session.ShowGameDialog(gone);
+		s_shown = false;
+	}
+	for (ds::ExternalGameDialogAnswer answer; active && session.TakeGameDialogAnswer(s_serial, answer);)
+	{
+		const std::wstring typed = boost::nowide::widen(answer.text);
+		const sint32 length = std::min((sint32)typed.size(), swkbd_maxLength());
+		for (sint32 i = 0; i < length; i++)
+			swkbdInternalState->formStringBuffer[i] = typed[i];
+		swkbdInternalState->formStringLength = std::max(0, length);
+		swkbdInternalState->formStringBuffer[swkbdInternalState->formStringLength] = '\0';
+		swkbd_inputStringChanged();
+		swkbd_finishInput();
+	}
+}
+
 void swkbd_render(bool mainWindow)
 {
+	// Dualscreen's to show, while it wants it.
+	if (DualscreenSession::instance().TakesGameDialogs())
+	{
+		if (mainWindow)
+			swkbd_dualscreen();
+		return;
+	}
+	// Drawn here again, so told afresh should Dualscreen want it back.
+	s_dualscreenShown = false;
 	// only render if active
 	if( swkbdInternalState == NULL || swkbdInternalState->isActive == false)
 		return;

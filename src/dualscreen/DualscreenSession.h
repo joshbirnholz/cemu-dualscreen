@@ -231,6 +231,16 @@ public:
 	bool TakeAmiiboScan(std::string& path);
 	void SendAmiiboResult(ds::ExternalAmiiboResult result);
 
+	// The game's own dialogs -- its keyboard (swkbd.cpp), its error messages
+	// (erreula.cpp) -- shown by Dualscreen in place of Cemu's while it wants
+	// them, typed into and answered there. All three are the render
+	// thread's, which draws them otherwise; TakesGameDialogs() is lock-free.
+	bool TakesGameDialogs() const { return m_gameDialogsWantedAtomic.load(std::memory_order_relaxed); }
+	void ShowGameDialog(const ds::ExternalGameDialog& dialog);
+	// The answer to the dialog numbered `serial`, once Dualscreen gives one.
+	// Each kind numbers its own dialogs apart from the others'.
+	bool TakeGameDialogAnswer(uint32_t serial, ds::ExternalGameDialogAnswer& out);
+
 private:
 	// Every method that reaches m_producer takes this, exclusively -- see the
 	// class comment for why a shared_mutex is not safe here.
@@ -306,6 +316,7 @@ private:
 	std::atomic<bool> m_gamePausedAtomic{false};
 	std::atomic<bool> m_stillWantedAtomic{false};
 	std::atomic<bool> m_pointerShownAtomic{true};
+	std::atomic<bool> m_gameDialogsWantedAtomic{false};
 	// What Dualscreen asked of Cemu itself, for the UI thread.
 	std::mutex m_requestsMutex;
 	std::function<void()> m_requestHandler;
@@ -314,6 +325,8 @@ private:
 	bool m_optionsWanted = false;
 	std::vector<std::pair<std::string, int>> m_optionChanges;
 	std::vector<std::string> m_amiiboScans;
+	// Under m_requestsMutex.
+	std::vector<ds::ExternalGameDialogAnswer> m_gameDialogAnswers;
 	std::mutex m_overlayRectMutex;
 	float m_overlayRect[4] = {0, 0, 0, 0};
 	std::mutex m_overlayMutex;

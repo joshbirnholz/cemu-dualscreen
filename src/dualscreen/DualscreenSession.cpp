@@ -91,8 +91,10 @@ void DualscreenSession::Start(int tvWidth, int tvHeight, int padWidth, int padHe
 	// amiibo -- see SetRequestHandler().
 	// And the pointer over that menu is streamed, so its lists drag and turn
 	// under a finger and the wheel -- see SendOverlayPointer().
+	// And the game's own keyboard and error messages are Dualscreen's to show
+	// -- see ShowGameDialog().
 	info.features = ds::kExternalFeatureOverlay | ds::kExternalFeaturePause |
-					ds::kExternalFeatureOverlayPointer;
+					ds::kExternalFeatureOverlayPointer | ds::kExternalFeatureGameDialogs;
 	{
 		std::scoped_lock requests(m_requestsMutex);
 		if (m_requestHandler)
@@ -194,6 +196,8 @@ void DualscreenSession::Poll()
 		m_overlayVisibleAtomic.store(false, std::memory_order_relaxed);
 		m_overlayTakesInputAtomic.store(false, std::memory_order_relaxed);
 		m_pointerShownAtomic.store(true, std::memory_order_relaxed);
+		// Cemu draws the game's dialogs again.
+		m_gameDialogsWantedAtomic.store(false, std::memory_order_relaxed);
 		// A game Dualscreen paused, or is pausing, would otherwise wait for it
 		// for ever. coreinit ignores this when nothing is paused.
 		m_pauseRequests.assign(1, false);
@@ -230,10 +234,18 @@ void DualscreenSession::Poll()
 			m_amiiboScans.push_back(std::move(path));
 			asked = true;
 		}
+		// Not the UI thread's: the render thread takes these as it draws.
+		for (ds::ExternalGameDialogAnswer answer; m_producer.take_game_dialog_answer(answer);)
+		{
+			m_gameDialogAnswers.push_back(std::move(answer));
+			if (m_gameDialogAnswers.size() > 8)
+				m_gameDialogAnswers.erase(m_gameDialogAnswers.begin());
+		}
 		if (asked && m_requestHandler)
 			m_requestHandler();
 	}
 	m_pointerShownAtomic.store(m_producer.pointer_shown(), std::memory_order_relaxed);
+	m_gameDialogsWantedAtomic.store(m_producer.game_dialogs_wanted(), std::memory_order_relaxed);
 	// Dualscreen's menu, when it is up: copied out of shared memory here,
 	// under m_mutex like everything else that reaches m_producer, and kept
 	// for the renderer to pick up.
@@ -724,4 +736,26 @@ void DualscreenSession::SendAmiiboResult(ds::ExternalAmiiboResult result)
 	if (!m_running)
 		return;
 	m_producer.send_amiibo_result(result);
+}
+
+void DualscreenSession::ShowGameDialog(const ds::ExternalGameDialog& dialog)
+{
+	std::scoped_lock lock(m_mutex);
+	if (!m_running)
+		return;
+	m_producer.send_game_dialog(dialog);
+}
+
+bool DualscreenSession::TakeGameDialogAnswer(uint32_t serial, ds::ExternalGameDialogAnswer& out)
+{
+	std::scoped_lock requests(m_requestsMutex);
+	for (auto it = m_gameDialogAnswers.begin(); it != m_gameDialogAnswers.end(); ++it)
+	{
+		if (it->serial != serial)
+			continue;
+		out = std::move(*it);
+		m_gameDialogAnswers.erase(it);
+		return true;
+	}
+	return false;
 }
