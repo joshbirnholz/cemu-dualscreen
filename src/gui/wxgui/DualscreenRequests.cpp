@@ -155,13 +155,13 @@ namespace
 			 []() { return (int)GetConfig().upscale_filter.GetValue(); },
 			 [](int choice) { GetConfig().upscale_filter = choice; }, kBicubicFilter},
 			// The order of Cemu's FullscreenScaling.
-			{"fullscreen_scaling", "Aspect ratio", {"Original", "Stretched"},
+			{"fullscreen_scaling", "Aspect Ratio", {"Original", "Stretched"},
 			 []() { return (int)GetConfig().fullscreen_scaling.GetValue(); },
 			 [](int choice) { GetConfig().fullscreen_scaling = choice; }, kKeepAspectRatio},
 			// Cemu's overlay is a position and a tick for each line; these
 			// are the few combinations worth stepping through, in the corner
 			// it was last put in, or the top left.
-			{"performance_overlay", "Performance overlay",
+			{"performance_overlay", "Performance Overlay",
 			 {"Off", "Frame rate", "Frame rate and CPU", "Everything"},
 			 []() {
 				 const auto& overlay = GetConfig().overlay;
@@ -193,7 +193,7 @@ namespace
 			 [](int choice) { GetConfig().tv_channels = (AudioChannels)choice; }, kStereo},
 			// As the Game Profile window offers it, less the interpreter,
 			// which is for debugging.
-			{"cpu_mode", "CPU mode", {"Auto", "Multi-core", "Single-core"},
+			{"cpu_mode", "CPU Mode", {"Auto", "Multi-core", "Single-core"},
 			 []() {
 				 const auto profile = RunningGameProfile();
 				 if (!profile)
