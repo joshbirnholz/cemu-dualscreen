@@ -319,7 +319,8 @@ enum class ExternalControl : uint8_t {
     // Hello said kExternalFeatureGameDialogs.
     GameDialogsWanted = 27,
     // producer -> consumer, an ExternalGameDialog: one put up, or None once
-    // the game has put it away.
+    // the game has put it away -- and a keyboard again, under the same
+    // serial, each time what its field holds changes on the producer's side.
     GameDialog = 28,
     // consumer -> producer, an ExternalGameDialogAnswer.
     GameDialogAnswer = 29,

@@ -423,15 +423,21 @@ static void swkbd_dualscreen()
 	uint32& s_serial = s_dualscreenSerial;
 	auto& session = DualscreenSession::instance();
 	const bool active = swkbdInternalState != nullptr && swkbdInternalState->isActive;
-	if (active && !s_shown)
+	// What is in the form, said again whenever it changes: typed in this
+	// window -- which has the keyboard, Steam's on-screen one included --
+	// it shows in Dualscreen's field as it is typed.
+	static std::string s_sentText;
+	const std::string text = active ? boost::nowide::narrow(std::wstring(swkbdInternalState->formStringBuffer, swkbdInternalState->formStringLength)) : std::string();
+	if (active && (!s_shown || text != s_sentText))
 	{
 		ds::ExternalGameDialog dialog;
 		dialog.kind = ds::ExternalGameDialogKind::Keyboard;
-		dialog.serial = ++s_serial;
-		dialog.text = boost::nowide::narrow(std::wstring(swkbdInternalState->formStringBuffer, swkbdInternalState->formStringLength));
+		dialog.serial = s_shown ? s_serial : ++s_serial;
+		dialog.text = text;
 		dialog.max_length = (uint32)std::max(0, swkbd_maxLength());
 		session.ShowGameDialog(dialog);
 		s_shown = true;
+		s_sentText = text;
 	}
 	else if (!active && s_shown)
 	{
