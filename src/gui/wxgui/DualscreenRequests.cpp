@@ -185,6 +185,12 @@ namespace
 				 overlay.ram_usage = choice >= 3;
 				 overlay.vram_usage = choice >= 3;
 			 }, 0},
+			// The TV's sound, as Cemu's Audio settings offer it: Dualscreen
+			// keeps it in its own Settings, for every game alike, and tells it
+			// here. Read as a game starts, which opens the TV's device.
+			{"tv_channels", "TV audio", {"Mono", "Stereo", "Surround"},
+			 []() { return (int)GetConfig().tv_channels; },
+			 [](int choice) { GetConfig().tv_channels = (AudioChannels)choice; }, kStereo},
 			// As the Game Profile window offers it, less the interpreter,
 			// which is for debugging.
 			{"cpu_mode", "CPU mode", {"Auto", "Multi-core", "Single-core"},
