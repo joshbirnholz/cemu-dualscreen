@@ -47,45 +47,6 @@
 // latency, the same as the ring buffer already tolerates, rather than
 // costing Cemu a frame of pacing.
 
-namespace
-{
-	// Temporary instrumentation, kept across the move to a background
-	// thread to confirm it actually worked: HandleDualscreenFrame ("tap")
-	// should now cost close to nothing on the GPU thread, with the readback
-	// cost showing up in PixelConvert on m_dualscreenThread instead, where a
-	// slow moment no longer competes with the game for the same thread.
-	// Remove once that's confirmed.
-	struct ScopedCallTiming
-	{
-		const char* label;
-		std::chrono::steady_clock::time_point started = std::chrono::steady_clock::now();
-		std::chrono::steady_clock::time_point& windowStart;
-		double& totalMs;
-		int& calls;
-		ScopedCallTiming(const char* label_, std::chrono::steady_clock::time_point& windowStart_,
-						 double& totalMs_, int& calls_)
-			: label(label_), windowStart(windowStart_), totalMs(totalMs_), calls(calls_)
-		{
-		}
-		~ScopedCallTiming()
-		{
-			const auto now = std::chrono::steady_clock::now();
-			totalMs += std::chrono::duration<double, std::milli>(now - started).count();
-			++calls;
-			const double windowSeconds = std::chrono::duration<double>(now - windowStart).count();
-			if (windowSeconds >= 1.0)
-			{
-				cemuLog_log(LogType::Force,
-							"Dualscreen: {} cost {:.1f}ms over {} calls in the last {:.2f}s", label,
-							totalMs, calls, windowSeconds);
-				windowStart = now;
-				totalMs = 0.0;
-				calls = 0;
-			}
-		}
-	};
-}
-
 void VulkanRenderer::DualscreenReleaseBuffers()
 {
 	// m_dualscreenThread reads a slot's mapped memory between it being marked
@@ -355,10 +316,6 @@ void VulkanRenderer::DualscreenDrain(size_t screenIndex)
 		}
 		else
 		{
-			static std::chrono::steady_clock::time_point s_pixelWindowStart = std::chrono::steady_clock::now();
-			static double s_pixelTotalMs = 0.0;
-			static int s_pixelCalls = 0;
-			ScopedCallTiming pixelTiming("PixelConvert", s_pixelWindowStart, s_pixelTotalMs, s_pixelCalls);
 			m_dualscreenPixels.resize(count);
 			if (slot.packed_a2b10g10r10)
 			{
@@ -446,11 +403,6 @@ void VulkanRenderer::HandleDualscreenFrame(LatteTextureView* texView, bool padVi
 			DualscreenReleaseBuffers();
 		return;
 	}
-
-	static std::chrono::steady_clock::time_point s_tapWindowStart = std::chrono::steady_clock::now();
-	static double s_tapTotalMs = 0.0;
-	static int s_tapCalls = 0;
-	ScopedCallTiming tapTiming("tap", s_tapWindowStart, s_tapTotalMs, s_tapCalls);
 
 	const size_t screenIndex = padView ? 1 : 0;
 	// Draining -- reading whatever finished since last time -- is
