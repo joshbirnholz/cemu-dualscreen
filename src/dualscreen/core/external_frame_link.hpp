@@ -95,6 +95,68 @@ inline constexpr uint32_t kExternalFeatureOverlayPointer = 32u;
 // GameDialog, answered with GameDialogAnswer. It does once the consumer has
 // said GameDialogsWanted, and draws them itself again when it says not.
 inline constexpr uint32_t kExternalFeatureGameDialogs = 64u;
+// The producer animates the consumer's menu itself as it comes and goes --
+// see ExternalControl::OverlayAnimation. A picture a frame through the
+// overlay could not keep up: a producer makes a texture of each new one, and
+// does so only every so often.
+inline constexpr uint32_t kExternalFeatureOverlayAnimation = 128u;
+
+// How the menu comes and goes, for the end that animates it: opened from the
+// game, the backdrop fades in quickly and the menu just after, growing the
+// last little way into place; closed, the menu fades and shrinks away first,
+// then the backdrop. The same curves as the consumer's own menu -- see its
+// MenuEntrance -- so a menu looks the same in either window.
+struct ExternalOverlayAnimation {
+    enum class Mode : uint8_t { Entering = 1, Leaving = 2 };
+
+    static constexpr float kBackdropSeconds = 0.12f;
+    static constexpr float kContentsDelaySeconds = 0.07f;
+    static constexpr float kContentsSeconds = 0.15f;
+    static constexpr float kLeaveContentsSeconds = 0.10f;
+    static constexpr float kLeaveBackdropDelaySeconds = 0.04f;
+    static constexpr float kLeaveBackdropSeconds = 0.10f;
+    static constexpr float kStartScale = 0.96f;
+
+    // How much of each is showing, 0 to 1, and how big the menu is drawn,
+    // `seconds` after it began.
+    static float backdrop(Mode mode, float seconds) {
+        if (mode == Mode::Leaving) return 1.0f - ease(progress(seconds, kLeaveBackdropDelaySeconds, kLeaveBackdropSeconds));
+        return ease(progress(seconds, 0.0f, kBackdropSeconds));
+    }
+    static float contents(Mode mode, float seconds) {
+        if (mode == Mode::Leaving) return 1.0f - ease(progress(seconds, 0.0f, kLeaveContentsSeconds));
+        return ease(progress(seconds, kContentsDelaySeconds, kContentsSeconds));
+    }
+    static float scale(Mode mode, float seconds) {
+        return kStartScale + (1.0f - kStartScale) * contents(mode, seconds);
+    }
+    static bool done(Mode mode, float seconds) {
+        return seconds >= (mode == Mode::Leaving ? kLeaveBackdropDelaySeconds + kLeaveBackdropSeconds
+                                                 : kContentsDelaySeconds + kContentsSeconds);
+    }
+
+private:
+    static float progress(float seconds, float delay, float length) {
+        const float t = (seconds - delay) / length;
+        return t < 0.0f ? 0.0f : (t > 1.0f ? 1.0f : t);
+    }
+    // Quick at first and settling at the end.
+    static float ease(float t) {
+        const float rest = 1.0f - t;
+        return 1.0f - rest * rest * rest;
+    }
+};
+
+// The menu's two pictures for an animation -- see take_overlay_animation().
+struct ExternalOverlayAnimationFrames {
+    ExternalOverlayAnimation::Mode mode = ExternalOverlayAnimation::Mode::Entering;
+    bool takes_input = true;
+    int width = 0;
+    int height = 0;
+    // RGBA8, straight alpha: what is behind the menu, and the menu itself.
+    std::vector<uint8_t> backdrop;
+    std::vector<uint8_t> contents;
+};
 
 // Where a game is, as a producer that can pause it says.
 enum class ExternalPauseState : uint8_t {
@@ -324,6 +386,14 @@ enum class ExternalControl : uint8_t {
     GameDialog = 28,
     // consumer -> producer, an ExternalGameDialogAnswer.
     GameDialogAnswer = 29,
+    // consumer -> producer, "the menu is coming up (1) or going away (2):
+    // what is behind it is in overlay slot B and the menu in slot C, both
+    // serial X; animate them" -- see ExternalOverlayAnimation. Then a byte,
+    // 1 when the menu takes the keys and pads while it is up. Only to a
+    // producer whose Hello said kExternalFeatureOverlayAnimation. The
+    // overlay is up from this on, as for Overlay; a leaving menu taken down
+    // by Overlay goes once it has gone.
+    OverlayAnimation = 30,
 };
 
 // What the pointer over the overlay did -- see ExternalControl::OverlayPointer.
@@ -686,6 +756,18 @@ public:
     // draw one.
     bool publish_overlay(const uint8_t* rgba, int width, int height, bool takes_input = true);
     void hide_overlay();
+    // Whether the producer animates the menu itself -- see
+    // kExternalFeatureOverlayAnimation.
+    bool overlay_animation_supported() const {
+        return overlay_supported() && (info_.features & kExternalFeatureOverlayAnimation) != 0u;
+    }
+    // The menu coming up or going away, as two pictures the producer animates
+    // for itself -- what is behind the menu, and the menu -- each like
+    // publish_overlay()'s. The overlay is up from here on; one that is going
+    // away is taken down with hide_overlay() as usual, and the producer lets
+    // it finish going first.
+    bool publish_overlay_animation(ExternalOverlayAnimation::Mode mode, const uint8_t* backdrop,
+                                   const uint8_t* contents, int width, int height, bool takes_input);
     // Whether the producer's menu key was pressed since the last call.
     bool take_menu_key();
     // This app's Pointer setting, for the producer's own window -- see
@@ -950,6 +1032,10 @@ public:
     // arrived, or what arrived was being rewritten as it was read -- the next
     // poll() brings the newer one.
     bool take_overlay(std::vector<uint8_t>& rgba, int& width, int& height);
+    // The consumer's menu coming up or going away -- see
+    // ExternalControl::OverlayAnimation -- once, as it arrives. False when
+    // nothing new has, or what arrived was being rewritten as it was read.
+    bool take_overlay_animation(ExternalOverlayAnimationFrames& out);
     // Whether the consumer wants the mouse pointer shown over this window --
     // true until it has said otherwise.
     bool pointer_shown() const { return pointer_shown_; }
@@ -1011,6 +1097,13 @@ private:
     int overlay_slot_ = -1;
     uint64_t overlay_serial_ = 0;
     uint64_t overlay_taken_serial_ = 0;
+    // The last OverlayAnimation, until taken.
+    bool animation_pending_ = false;
+    ExternalOverlayAnimation::Mode animation_mode_ = ExternalOverlayAnimation::Mode::Entering;
+    bool animation_takes_input_ = true;
+    int animation_backdrop_slot_ = 0;
+    int animation_contents_slot_ = 1;
+    uint64_t animation_serial_ = 0;
     bool pointer_shown_ = true;
     std::vector<bool> pause_requests_;
     bool graphic_packs_wanted_ = false;

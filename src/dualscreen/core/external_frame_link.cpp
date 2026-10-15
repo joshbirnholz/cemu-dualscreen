@@ -943,6 +943,7 @@ bool ExternalFrameLink::handle_message(ExternalControl kind, const std::vector<u
         case ExternalControl::ScanAmiibo:
         case ExternalControl::GameDialogsWanted:
         case ExternalControl::GameDialogAnswer:
+        case ExternalControl::OverlayAnimation:
             // Ours to send, not to receive.
             return true;
     }
@@ -1104,6 +1105,47 @@ bool ExternalFrameLink::publish_overlay(const uint8_t* rgba, int width, int heig
     overlay_unsent_ = true;
     send_overlay_state();
     return true;
+}
+
+bool ExternalFrameLink::publish_overlay_animation(ExternalOverlayAnimation::Mode mode, const uint8_t* backdrop,
+                                                  const uint8_t* contents, int width, int height,
+                                                  bool takes_input) {
+    if (!overlay_animation_supported() || memory_ == nullptr || backdrop == nullptr || contents == nullptr ||
+        width <= 0 || height <= 0 || width > ExternalOverlayArea::kMaxWidth ||
+        height > ExternalOverlayArea::kMaxHeight) {
+        return false;
+    }
+    // Both slots: the producer copies them out as soon as it hears, and the
+    // next ordinary picture after an animation is long after that.
+    ++overlay_serial_;
+    const uint8_t* pictures[2] = {backdrop, contents};
+    for (int slot = 0; slot < 2; ++slot) {
+        ExternalSlotState& state = overlay_area()->slots[slot];
+        const uint64_t sequence = state.sequence.load(std::memory_order_relaxed);
+        state.sequence.store(sequence + 1, std::memory_order_release);
+        std::memcpy(static_cast<uint8_t*>(memory_) + ExternalOverlayArea::slot_offset(slot), pictures[slot],
+                    static_cast<std::size_t>(width) * height * 4);
+        state.width.store(static_cast<uint32_t>(width), std::memory_order_relaxed);
+        state.height.store(static_cast<uint32_t>(height), std::memory_order_relaxed);
+        state.serial.store(overlay_serial_, std::memory_order_relaxed);
+        state.sequence.store(sequence + 2, std::memory_order_release);
+    }
+    next_overlay_slot_ = 0;
+    overlay_slot_ = 1;
+    overlay_shown_ = true;
+    overlay_takes_input_ = takes_input;
+    // Said here and not left for send_overlay_state(): the producer is up
+    // from this message on, and an Overlay after it would show the menu
+    // alone, without what is behind it.
+    overlay_unsent_ = false;
+    std::vector<uint8_t> body;
+    body.push_back(static_cast<uint8_t>(mode));
+    body.push_back(0u);
+    body.push_back(1u);
+    put_u32(body, static_cast<uint32_t>(overlay_serial_ & 0xFFFFFFFFu));
+    put_u32(body, static_cast<uint32_t>((overlay_serial_ >> 32) & 0xFFFFFFFFu));
+    body.push_back(takes_input ? 1u : 0u);
+    return send_control(ExternalControl::OverlayAnimation, body);
 }
 
 void ExternalFrameLink::hide_overlay() {
@@ -1823,6 +1865,47 @@ bool ExternalFrameProducer::take_overlay(std::vector<uint8_t>& rgba, int& width,
     return true;
 }
 
+bool ExternalFrameProducer::take_overlay_animation(ExternalOverlayAnimationFrames& out) {
+    if (memory_ == nullptr || !overlay_available() || !animation_pending_) return false;
+    const auto* area = reinterpret_cast<const ExternalOverlayArea*>(
+        static_cast<const uint8_t*>(memory_) + ExternalOverlayArea::offset());
+    const int slots[2] = {animation_backdrop_slot_, animation_contents_slot_};
+    std::vector<uint8_t>* into[2] = {&out.backdrop, &out.contents};
+    int width = 0;
+    int height = 0;
+    for (int index = 0; index < 2; ++index) {
+        const ExternalSlotState& state = area->slots[slots[index]];
+        const uint64_t before = state.sequence.load(std::memory_order_acquire);
+        if ((before & 1u) != 0 || state.serial.load(std::memory_order_relaxed) != animation_serial_) {
+            // Being written, or already written over: a newer word is coming.
+            animation_pending_ = false;
+            return false;
+        }
+        const int w = static_cast<int>(state.width.load(std::memory_order_relaxed));
+        const int h = static_cast<int>(state.height.load(std::memory_order_relaxed));
+        if (w <= 0 || h <= 0 || w > ExternalOverlayArea::kMaxWidth || h > ExternalOverlayArea::kMaxHeight ||
+            (index == 1 && (w != width || h != height))) {
+            animation_pending_ = false;
+            return false;
+        }
+        width = w;
+        height = h;
+        const uint8_t* source =
+            static_cast<const uint8_t*>(memory_) + ExternalOverlayArea::slot_offset(slots[index]);
+        into[index]->assign(source, source + static_cast<std::size_t>(w) * h * 4);
+        if (state.sequence.load(std::memory_order_acquire) != before) {
+            animation_pending_ = false;
+            return false;
+        }
+    }
+    animation_pending_ = false;
+    out.mode = animation_mode_;
+    out.takes_input = animation_takes_input_;
+    out.width = width;
+    out.height = height;
+    return true;
+}
+
 bool ExternalFrameProducer::poll(bool& out_reset_requested, std::string* error) {
     out_reset_requested = false;
     if (fd_ < 0) {
@@ -1893,6 +1976,22 @@ bool ExternalFrameProducer::poll(bool& out_reset_requested, std::string* error) 
                 overlay_slot_ = body[1];
                 overlay_serial_ = static_cast<uint64_t>(read_u32(body.data() + 2)) |
                                   (static_cast<uint64_t>(read_u32(body.data() + 6)) << 32);
+            }
+        } else if (kind == ExternalControl::OverlayAnimation) {
+            if (body.size() >= 12 && overlay_available() && (body[0] == 1u || body[0] == 2u) &&
+                body[1] < ExternalOverlayArea::kSlots && body[2] < ExternalOverlayArea::kSlots) {
+                animation_mode_ = static_cast<ExternalOverlayAnimation::Mode>(body[0]);
+                animation_backdrop_slot_ = body[1];
+                animation_contents_slot_ = body[2];
+                animation_serial_ = static_cast<uint64_t>(read_u32(body.data() + 3)) |
+                                    (static_cast<uint64_t>(read_u32(body.data() + 7)) << 32);
+                animation_takes_input_ = body[11] != 0u;
+                animation_pending_ = true;
+                // Up from here on, as an Overlay would have it -- but with
+                // nothing for take_overlay() until a picture of its own.
+                overlay_visible_ = true;
+                overlay_takes_input_ = animation_takes_input_;
+                overlay_slot_ = -1;
             }
         } else if (kind == ExternalControl::OptionsWanted) {
             options_wanted_ = true;
@@ -1997,6 +2096,10 @@ bool ExternalFrameLink::handle_message(ExternalControl, const std::vector<uint8_
 }
 bool ExternalFrameLink::send_control(ExternalControl, const std::vector<uint8_t>&) { return false; }
 bool ExternalFrameLink::publish_overlay(const uint8_t*, int, int, bool) { return false; }
+bool ExternalFrameLink::publish_overlay_animation(ExternalOverlayAnimation::Mode, const uint8_t*, const uint8_t*, int,
+                                                  int, bool) {
+    return false;
+}
 void ExternalFrameLink::hide_overlay() {}
 void ExternalFrameLink::send_overlay_state() {}
 bool ExternalFrameLink::take_menu_key() { return false; }
@@ -2051,6 +2154,7 @@ void ExternalFrameProducer::send_amiibo_result(ExternalAmiiboResult) {}
 void ExternalFrameProducer::send_game_dialog(const ExternalGameDialog&) {}
 bool ExternalFrameProducer::take_game_dialog_answer(ExternalGameDialogAnswer&) { return false; }
 bool ExternalFrameProducer::take_overlay(std::vector<uint8_t>&, int&, int&) { return false; }
+bool ExternalFrameProducer::take_overlay_animation(ExternalOverlayAnimationFrames&) { return false; }
 bool ExternalFrameProducer::poll(bool& out_reset_requested, std::string*) {
     out_reset_requested = false;
     return false;

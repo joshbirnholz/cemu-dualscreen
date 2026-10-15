@@ -94,7 +94,8 @@ void DualscreenSession::Start(int tvWidth, int tvHeight, int padWidth, int padHe
 	// And the game's own keyboard and error messages are Dualscreen's to show
 	// -- see ShowGameDialog().
 	info.features = ds::kExternalFeatureOverlay | ds::kExternalFeaturePause |
-					ds::kExternalFeatureOverlayPointer | ds::kExternalFeatureGameDialogs;
+					ds::kExternalFeatureOverlayPointer | ds::kExternalFeatureGameDialogs |
+					ds::kExternalFeatureOverlayAnimation;
 	{
 		std::scoped_lock requests(m_requestsMutex);
 		if (m_requestHandler)
@@ -286,6 +287,15 @@ void DualscreenSession::Poll()
 			m_overlayWidth = width;
 			m_overlayHeight = height;
 			m_overlayFresh = true;
+		}
+		ds::ExternalOverlayAnimationFrames animation;
+		if (m_producer.take_overlay_animation(animation))
+		{
+			std::scoped_lock overlay(m_overlayMutex);
+			m_overlayAnimation = std::move(animation);
+			m_overlayAnimationFresh = true;
+			// The picture before it is the old menu's, or nothing.
+			m_overlayFresh = false;
 		}
 		m_overlayVisibleAtomic.store(m_producer.overlay_visible(), std::memory_order_relaxed);
 		m_overlayTakesInputAtomic.store(m_producer.overlay_takes_input(), std::memory_order_relaxed);
@@ -596,6 +606,17 @@ int DualscreenSession::PadHeight()
 {
 	std::scoped_lock lock(m_mutex);
 	return m_padHeight;
+}
+
+bool DualscreenSession::TakeOverlayAnimation(ds::ExternalOverlayAnimationFrames& out)
+{
+	std::scoped_lock overlay(m_overlayMutex);
+	if (!m_overlayAnimationFresh)
+		return false;
+	out = std::move(m_overlayAnimation);
+	m_overlayAnimation = ds::ExternalOverlayAnimationFrames();
+	m_overlayAnimationFresh = false;
+	return true;
 }
 
 bool DualscreenSession::TakeOverlay(std::vector<uint8_t>& rgba, int& width, int& height)

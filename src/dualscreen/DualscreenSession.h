@@ -163,6 +163,10 @@ public:
 	// is up, rather than a notice the game keeps them under.
 	bool OverlayTakesInput() const { return m_overlayTakesInputAtomic.load(std::memory_order_relaxed); }
 	bool TakeOverlay(std::vector<uint8_t>& rgba, int& width, int& height);
+	// The menu coming up or going away, as the two pictures this window
+	// animates it from itself -- see ds::ExternalOverlayAnimation. Once each,
+	// like TakeOverlay().
+	bool TakeOverlayAnimation(ds::ExternalOverlayAnimationFrames& out);
 	// F1 in this window: Dualscreen opens or closes its menu, as it would for
 	// F1 pressed in its own. Not Tab, which Cemu holds to show the GamePad.
 	void SendMenuKey();
@@ -345,4 +349,6 @@ private:
 	int m_overlayWidth = 0;
 	int m_overlayHeight = 0;
 	bool m_overlayFresh = false;
+	ds::ExternalOverlayAnimationFrames m_overlayAnimation;
+	bool m_overlayAnimationFresh = false;
 };
