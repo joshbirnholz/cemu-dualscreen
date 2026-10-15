@@ -878,7 +878,7 @@ void MainWindow::OpenSettings()
 		m_discord.reset();
 	#endif
 
-	if(config.check_update && !m_game_launched)
+	if(config.check_update && !m_game_launched && LaunchSettings::GetDualscreenSocket().empty())
 		m_update_available = CemuUpdateWindow::IsUpdateAvailableAsync();
 
 	if (mlc_modified)
@@ -1310,7 +1310,9 @@ void MainWindow::LoadSettings()
 	GetConfigHandle().Load();
 	const auto& config = GetWxGUIConfig();
 
-	if(config.check_update)
+	// Dualscreen keeps the Cemu it starts up to date itself, and Cemu's own
+	// update would trade it for one that cannot hand its screens over.
+	if(config.check_update && LaunchSettings::GetDualscreenSocket().empty())
 		m_update_available = CemuUpdateWindow::IsUpdateAvailableAsync();
 
 	if (config.window_position != Vector2i{ -1,-1 })
@@ -2598,6 +2600,11 @@ void MainWindow::RestoreSettingsAfterGameExited()
 
 void MainWindow::UpdateSettingsAfterGameLaunch()
 {
+	// Dropping a std::async future waits for it: a check still going would
+	// hold the game back until the update server answered. Let it finish on
+	// its own instead.
+	if (m_update_available.valid() && !future_is_ready(m_update_available))
+		std::thread([check = std::move(m_update_available)]() mutable { check.wait(); }).detach();
 	m_update_available = {};
 	RecreateMenu();
 }
