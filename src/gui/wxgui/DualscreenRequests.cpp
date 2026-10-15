@@ -7,6 +7,7 @@
 #include "Cafe/GraphicPack/GraphicPack2.h"
 #include "Cafe/CafeSystem.h"
 #include "Cafe/OS/libs/nfc/nfc.h"
+#include "Cafe/OS/libs/nn_nfp/nn_nfp.h"
 #include "Cafe/GameProfile/GameProfile.h"
 #include "config/CemuConfig.h"
 
@@ -478,12 +479,22 @@ namespace
 	{
 		if (!CafeSystem::IsTitleRunning())
 			return ds::ExternalAmiiboResult::NoGame;
+		// Which of the game's NFC libraries is listening says what a file
+		// that will not scan means: an amiibo is only checked as one by
+		// nn_nfp, and without it a file is tried as the plain NFC tag a few
+		// games read themselves -- which no amiibo is.
+		const bool amiiboListening = nnNfp_isInitialized();
+		const bool nfcListening = nfc::NFCIsInit(0);
 		uint32 error = NFC_TOUCH_TAG_ERROR_NONE;
 		if (!nfc::TouchTagFromFile(_utf8ToPath(path), &error))
 		{
-			cemuLog_log(LogType::Force, "Dualscreen: could not scan {} as an amiibo", path);
-			return error == NFC_TOUCH_TAG_ERROR_NO_ACCESS ? ds::ExternalAmiiboResult::CannotOpen
-														  : ds::ExternalAmiiboResult::NotAnAmiibo;
+			cemuLog_log(LogType::Force, "Dualscreen: could not scan {} as an amiibo (amiibo {}, NFC {})", path,
+						amiiboListening ? "listening" : "not listening", nfcListening ? "listening" : "not listening");
+			if (error == NFC_TOUCH_TAG_ERROR_NO_ACCESS)
+				return ds::ExternalAmiiboResult::CannotOpen;
+			if (amiiboListening)
+				return ds::ExternalAmiiboResult::NotAnAmiibo;
+			return nfcListening ? ds::ExternalAmiiboResult::NotItsKind : ds::ExternalAmiiboResult::NotReading;
 		}
 		cemuLog_log(LogType::Force, "Dualscreen: scanned the amiibo {}", path);
 		GetWxGUIConfig().AddRecentNfcFile(path);

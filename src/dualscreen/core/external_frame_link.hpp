@@ -225,6 +225,11 @@ enum class ExternalAmiiboResult : uint8_t {
     CannotOpen = 1,   // the file could not be read
     NotAnAmiibo = 2,  // it was read, and is not an NFC tag's dump
     NoGame = 3,       // nothing is running to hold it to
+    // The game is reading neither amiibo nor any other NFC figure just now:
+    // a game without amiibo, or one away from the part of it that has them.
+    NotReading = 4,
+    // The game reads NFC figures, but its own kind, which this is not.
+    NotItsKind = 5,
 };
 
 // A dialog the game put up -- see kExternalFeatureGameDialogs. The order of

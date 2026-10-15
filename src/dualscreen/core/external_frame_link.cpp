@@ -920,7 +920,7 @@ bool ExternalFrameLink::handle_message(ExternalControl kind, const std::vector<u
             return true;
         }
         case ExternalControl::AmiiboScanned:
-            if (body.empty() || body[0] > static_cast<uint8_t>(ExternalAmiiboResult::NoGame)) {
+            if (body.empty() || body[0] > static_cast<uint8_t>(ExternalAmiiboResult::NotItsKind)) {
                 return true;
             }
             amiibo_results_.push_back(static_cast<ExternalAmiiboResult>(body[0]));
