@@ -166,10 +166,22 @@ namespace
 		return {};
 	}
 
+	// A player unplugged because nothing is feeding it: its slot, and what it
+	// was, to plug it back in as when something does again. What a game is
+	// told its type is while it is out, and what a change of type changes.
+	struct Unplugged
+	{
+		size_t slot;
+		int type;
+	};
+	std::array<std::optional<Unplugged>, ds::kExternalPlayers> s_unplugged;
+
 	// Which of Cemu's controller slots `player` is: the one its DualScreen
 	// controller is assigned to, or the slot after the GamePad's by number.
 	size_t SlotForPlayer(int player)
 	{
+		if (s_unplugged[player])
+			return s_unplugged[player]->slot;
 		auto& input = InputManager::instance();
 		const std::string uuid = DualScreenController::uuid_for(player);
 		for (size_t slot = 0; slot < InputManager::kMaxController; ++slot)
@@ -188,6 +200,8 @@ namespace
 
 	int PlayerType(int player)
 	{
+		if (s_unplugged[player])
+			return s_unplugged[player]->type;
 		const auto emulated = InputManager::instance().get_controller(SlotForPlayer(player));
 		if (!emulated)
 			return kPlayerTypeNone;
@@ -212,10 +226,22 @@ namespace
 	// the controller profiles, so Cemu on its own is as it was. A slot that is
 	// already that keeps its own mapping; a new one gets the default mapping
 	// for whatever feeds it, as a fresh Cemu does.
+	void PlugInPlayer(int player, size_t slot, int choice);
+
 	void SetPlayerType(int player, int choice)
 	{
+		// Out for now: what it comes back as.
+		if (s_unplugged[player])
+		{
+			s_unplugged[player]->type = choice;
+			return;
+		}
+		PlugInPlayer(player, SlotForPlayer(player), choice);
+	}
+
+	void PlugInPlayer(int player, size_t slot, int choice)
+	{
 		auto& input = InputManager::instance();
-		const size_t slot = SlotForPlayer(player);
 		if (choice == kPlayerTypeNone)
 		{
 			input.delete_controller(slot);
@@ -256,6 +282,60 @@ namespace
 		if (s_started[player] == -2)
 			s_started[player] = PlayerType(player);
 		return s_started[player];
+	}
+
+	// Whether a slot is fed by `player`'s DualScreen controller and nothing
+	// else -- the only kind unplugged when it goes quiet: one with a pad of
+	// this machine's in it is that pad's to say.
+	bool FedOnlyByPlayer(size_t slot, int player)
+	{
+		const auto emulated = InputManager::instance().get_controller(slot);
+		if (!emulated || emulated->type() == EmulatedController::Type::VPAD || emulated->get_controllers().empty())
+			return false;
+		const std::string uuid = DualScreenController::uuid_for(player);
+		for (const auto& controller : emulated->get_controllers())
+		{
+			if (controller->api() != InputAPI::DualScreen || controller->uuid() != uuid)
+				return false;
+		}
+		return true;
+	}
+
+	// The game's controllers made to match what the shell is feeding: a player
+	// nothing feeds is unplugged, so the game sees only controllers someone is
+	// holding, and plugged back in, as the type it was, when one is. With no
+	// shell left, every one goes back as it was.
+	void MatchPlayersFed(const std::array<bool, ds::kExternalPlayers>& fed, bool attached)
+	{
+		auto& input = InputManager::instance();
+		for (int player = 0; player < ds::kExternalPlayers; ++player)
+		{
+			const bool wanted = !attached || fed[player];
+			if (wanted && s_unplugged[player])
+			{
+				const Unplugged was = *s_unplugged[player];
+				s_unplugged[player].reset();
+				if (was.type != kPlayerTypeNone)
+				{
+					PlugInPlayer(player, was.slot, was.type);
+					cemuLog_log(LogType::Force, "Dualscreen: Player {} is back, as a {}", player + 1,
+								kPlayerTypeChoices[was.type]);
+				}
+			}
+			else if (!wanted && !s_unplugged[player])
+			{
+				const size_t slot = SlotForPlayer(player);
+				if (!FedOnlyByPlayer(slot, player))
+					continue;
+				const int type = PlayerType(player);
+				if (type < 0)
+					continue;
+				s_unplugged[player] = Unplugged{slot, type};
+				input.delete_controller(slot);
+				cemuLog_log(LogType::Force, "Dualscreen: nothing is feeding Player {}, so it is unplugged",
+							player + 1);
+			}
+		}
 	}
 
 	template<int Player> int GetPlayerType() { return PlayerType(Player); }
@@ -444,6 +524,11 @@ namespace
 
 		for (std::string path; session.TakeAmiiboScan(path);)
 			session.SendAmiiboResult(ScanAmiibo(window, path));
+
+		std::array<bool, ds::kExternalPlayers> fed{};
+		bool attached = false;
+		if (session.TakePlayersFed(fed, attached))
+			MatchPlayersFed(fed, attached);
 	}
 }
 

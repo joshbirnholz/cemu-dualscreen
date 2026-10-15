@@ -67,6 +67,9 @@ namespace padscore
 			bool dpd_enabled = true;
 
 			bool disconnectCalled = false;
+			// Told it is there, so that its going is told too: Dualscreen
+			// unplugs a player nothing is feeding, mid-game.
+			bool connectReported = false;
 
 			BtnRepeat btn_repeat{};
 		} controller_data[InputManager::kMaxWPADControllers] = {};
@@ -705,7 +708,16 @@ namespace padscore
 					continue;
 				}
 
-				if (const auto controller = instance.get_wpad_controller(i))
+				const auto controller = instance.get_wpad_controller(i);
+				if (!controller && g_padscore.controller_data[i].connectReported)
+				{
+					// Unplugged: the game hears it go, as it would a real one's.
+					g_padscore.controller_data[i].connectReported = false;
+					cemuLog_log(LogType::InputAPI, "Calling WPADConnectCallback({}, {})", i, WPAD_ERR_NO_CONTROLLER);
+					PPCCoreCallback(g_padscore.controller_data[i].connectCallback, i, WPAD_ERR_NO_CONTROLLER);
+					continue;
+				}
+				if (controller)
 				{
 					if (controller->m_status == WPADController::ConnectCallbackStatus::ReportDisconnect || controller->was_home_button_down()) // fixed!
 					{
@@ -718,6 +730,7 @@ namespace padscore
 					else if (controller->m_status == WPADController::ConnectCallbackStatus::ReportConnect) 
 					{
 						controller->m_status = WPADController::ConnectCallbackStatus::None;
+						g_padscore.controller_data[i].connectReported = true;
 						cemuLog_log(LogType::InputAPI, "Calling WPADConnectCallback({}, {})", i, WPAD_ERR_NONE);
 						PPCCoreCallback(g_padscore.controller_data[i].connectCallback, i, WPAD_ERR_NONE);
 					}

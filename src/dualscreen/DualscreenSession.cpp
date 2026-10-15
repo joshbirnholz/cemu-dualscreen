@@ -201,6 +201,19 @@ void DualscreenSession::Poll()
 		// A game Dualscreen paused, or is pausing, would otherwise wait for it
 		// for ever. coreinit ignores this when nothing is paused.
 		m_pauseRequests.assign(1, false);
+		// The game's controllers as Cemu had them before the shell unplugged
+		// any, now nothing is left to feed them.
+		{
+			std::scoped_lock requests(m_requestsMutex);
+			if (m_playersAttached)
+			{
+				m_playersAttached = false;
+				m_playersFed.fill(false);
+				m_playersFedChanged = true;
+				if (m_requestHandler)
+					m_requestHandler();
+			}
+		}
 		return;
 	}
 	for (bool pause = false; m_producer.take_pause_request(pause);)
@@ -234,6 +247,19 @@ void DualscreenSession::Poll()
 			m_amiiboScans.push_back(std::move(path));
 			asked = true;
 		}
+		// Which players anything is feeding: a change is the UI thread's to
+		// act on, unplugging or plugging the game's controllers to match.
+		for (int player = 0; player < ds::kExternalPlayers; ++player)
+		{
+			const bool fed = m_producer.player_connected(player);
+			if (fed != m_playersFed[player] || !m_playersAttached)
+			{
+				m_playersFed[player] = fed;
+				m_playersFedChanged = true;
+				asked = true;
+			}
+		}
+		m_playersAttached = true;
 		// Not the UI thread's: the render thread takes these as it draws.
 		for (ds::ExternalGameDialogAnswer answer; m_producer.take_game_dialog_answer(answer);)
 		{
@@ -718,6 +744,17 @@ void DualscreenSession::SendOptions(const std::vector<ds::ExternalOption>& optio
 	if (!m_running)
 		return;
 	m_producer.send_options(options);
+}
+
+bool DualscreenSession::TakePlayersFed(std::array<bool, ds::kExternalPlayers>& fed, bool& attached)
+{
+	std::scoped_lock requests(m_requestsMutex);
+	if (!m_playersFedChanged)
+		return false;
+	m_playersFedChanged = false;
+	fed = m_playersFed;
+	attached = m_playersAttached;
+	return true;
 }
 
 bool DualscreenSession::TakeAmiiboScan(std::string& path)

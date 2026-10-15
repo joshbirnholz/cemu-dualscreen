@@ -230,6 +230,12 @@ public:
 	void SendOptions(const std::vector<ds::ExternalOption>& options);
 	bool TakeAmiiboScan(std::string& path);
 	void SendAmiiboResult(ds::ExternalAmiiboResult result);
+	// Which players something is feeding, when that has changed since last
+	// asked: a pad unplugged, or unassigned in Dualscreen's Controller Order,
+	// stops feeding its player. `attached` is false once no shell is, when
+	// nothing is to be read into `fed`. Asked for on the UI thread, like the
+	// rest, which unplugs and plugs the game's controllers to match.
+	bool TakePlayersFed(std::array<bool, ds::kExternalPlayers>& fed, bool& attached);
 
 	// The game's own dialogs -- its keyboard (swkbd.cpp), its error messages
 	// (erreula.cpp) -- shown by Dualscreen in place of Cemu's while it wants
@@ -325,6 +331,11 @@ private:
 	bool m_optionsWanted = false;
 	std::vector<std::pair<std::string, int>> m_optionChanges;
 	std::vector<std::string> m_amiiboScans;
+	// Under m_requestsMutex: which players were fed when last looked, and
+	// whether that has changed since TakePlayersFed() was last asked.
+	std::array<bool, ds::kExternalPlayers> m_playersFed{};
+	bool m_playersAttached = false;
+	bool m_playersFedChanged = false;
 	// Under m_requestsMutex.
 	std::vector<ds::ExternalGameDialogAnswer> m_gameDialogAnswers;
 	std::mutex m_overlayRectMutex;
