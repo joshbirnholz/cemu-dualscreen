@@ -192,6 +192,9 @@ public:
 	void ImguiEnd() override;
 	ImTextureID GenerateTexture(const std::vector<uint8>& data, const Vector2i& size) override;
 	void DeleteTexture(ImTextureID id) override;
+	// Dualscreen's menu pictures: not made here, so its menu is simply shown,
+	// without coming and going -- see MenuAnimationHeld().
+	ImTextureID GenerateTextureRGBA(const std::vector<uint8>& rgba, const Vector2i& size) override { return nullptr; }
 	void DeleteFontTextures() override;
 
 	bool UseTFViaSSBO() const override { return true; }
