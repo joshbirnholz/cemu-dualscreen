@@ -59,7 +59,7 @@ void DualscreenSession::Start(int tvWidth, int tvHeight, int padWidth, int padHe
 		std::scoped_lock requests(m_requestsMutex);
 		if (m_requestHandler)
 			info.features |= ds::kExternalFeatureGraphicPacks | ds::kExternalFeatureOptions |
-							 ds::kExternalFeatureAmiibo;
+							 ds::kExternalFeatureAmiibo | ds::kExternalFeatureAmiiboReading;
 	}
 
 	std::string error;
@@ -738,6 +738,14 @@ void DualscreenSession::SendAmiiboResult(ds::ExternalAmiiboResult result)
 	if (!m_running)
 		return;
 	m_producer.send_amiibo_result(result);
+}
+
+void DualscreenSession::SetAmiiboReading(ds::ExternalAmiiboReading reading)
+{
+	std::scoped_lock lock(m_mutex);
+	if (!m_running)
+		return;
+	m_producer.send_amiibo_reading(reading);
 }
 
 void DualscreenSession::ShowGameDialog(const ds::ExternalGameDialog& dialog)

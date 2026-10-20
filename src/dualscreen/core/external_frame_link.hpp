@@ -100,6 +100,10 @@ inline constexpr uint32_t kExternalFeatureGameDialogs = 64u;
 // overlay could not keep up: a producer makes a texture of each new one, and
 // does so only every so often.
 inline constexpr uint32_t kExternalFeatureOverlayAnimation = 128u;
+// The producer says whether the game is looking for an amiibo -- see
+// ExternalControl::AmiiboReading -- so one that would not scan is said so
+// before the menu closes, not after the game has gone on without it.
+inline constexpr uint32_t kExternalFeatureAmiiboReading = 256u;
 
 // How the menu comes and goes, for the end that animates it: opened from the
 // game, the backdrop fades in quickly and the menu just after, growing the
@@ -230,6 +234,14 @@ enum class ExternalAmiiboResult : uint8_t {
     NotReading = 4,
     // The game reads NFC figures, but its own kind, which this is not.
     NotItsKind = 5,
+};
+
+// What the game is looking for -- see kExternalFeatureAmiiboReading. The
+// order is the wire format.
+enum class ExternalAmiiboReading : uint8_t {
+    Nothing = 0,     // no figure: no amiibo here, or not at this part of it
+    OwnFigures = 1,  // NFC figures, but its own kind, which no amiibo is
+    Amiibo = 2,      // an amiibo, held to the GamePad now
 };
 
 // A dialog the game put up -- see kExternalFeatureGameDialogs. The order of
@@ -399,6 +411,10 @@ enum class ExternalControl : uint8_t {
     // overlay is up from this on, as for Overlay; a leaving menu taken down
     // by Overlay goes once it has gone.
     OverlayAnimation = 30,
+    // producer -> consumer, an ExternalAmiiboReading: once as the consumer
+    // connects, and again each time it changes. Only from a producer whose
+    // Hello said kExternalFeatureAmiiboReading.
+    AmiiboReading = 31,
 };
 
 // What the pointer over the overlay did -- see ExternalControl::OverlayPointer.
@@ -832,6 +848,12 @@ public:
     }
     void scan_amiibo(const std::string& path);
     bool take_amiibo_result(ExternalAmiiboResult& out);
+    // What the game is looking for, as the producer last said -- see
+    // kExternalFeatureAmiiboReading -- or nothing until it has.
+    bool amiibo_reading_supported() const {
+        return connected() && (info_.features & kExternalFeatureAmiiboReading) != 0u;
+    }
+    std::optional<ExternalAmiiboReading> amiibo_reading() const { return amiibo_reading_; }
 
     // The game's own dialogs -- see kExternalFeatureGameDialogs -- asked for,
     // each as it is put up or away, and answered.
@@ -930,6 +952,7 @@ private:
     std::optional<std::vector<ExternalGraphicPack>> graphic_packs_;
     std::optional<std::vector<ExternalOption>> options_;
     std::vector<ExternalAmiiboResult> amiibo_results_;
+    std::optional<ExternalAmiiboReading> amiibo_reading_;
     // What want_game_dialogs() last got onto the wire; absent until it has.
     std::optional<bool> sent_game_dialogs_wanted_;
     // The newest dialog said, until taken.
@@ -1079,6 +1102,9 @@ public:
     // An amiibo the consumer wants scanned, oldest first, and the answer.
     bool take_amiibo_scan(std::string& path);
     void send_amiibo_result(ExternalAmiiboResult result);
+    // What the game is looking for, now: said to the consumer when it
+    // changes, so it may be called as often as is convenient.
+    void send_amiibo_reading(ExternalAmiiboReading reading);
 
     // Whether the consumer shows the game's dialogs in place of this
     // producer -- see kExternalFeatureGameDialogs -- each one as it is put up
@@ -1116,6 +1142,8 @@ private:
     bool options_wanted_ = false;
     std::vector<std::pair<std::string, int>> option_changes_;
     std::vector<std::string> amiibo_scans_;
+    // What send_amiibo_reading() last got onto the wire; absent until it has.
+    std::optional<ExternalAmiiboReading> sent_amiibo_reading_;
     bool game_dialogs_wanted_ = false;
     std::vector<ExternalGameDialogAnswer> game_dialog_answers_;
     std::vector<uint8_t> inbox_;

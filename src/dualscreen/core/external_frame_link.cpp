@@ -667,6 +667,7 @@ void ExternalFrameLink::close() {
     graphic_packs_.reset();
     options_.reset();
     amiibo_results_.clear();
+    amiibo_reading_.reset();
     sent_game_dialogs_wanted_.reset();
     game_dialog_.reset();
 }
@@ -700,6 +701,7 @@ bool ExternalFrameLink::accept_peer(std::string* error) {
     graphic_packs_.reset();
     options_.reset();
     amiibo_results_.clear();
+    amiibo_reading_.reset();
     sent_game_dialogs_wanted_.reset();
     game_dialog_.reset();
     // The memory goes over first, before anything is said about it, so a
@@ -925,6 +927,10 @@ bool ExternalFrameLink::handle_message(ExternalControl kind, const std::vector<u
             }
             amiibo_results_.push_back(static_cast<ExternalAmiiboResult>(body[0]));
             if (amiibo_results_.size() > 16) amiibo_results_.erase(amiibo_results_.begin());
+            return true;
+        case ExternalControl::AmiiboReading:
+            if (body.empty() || body[0] > static_cast<uint8_t>(ExternalAmiiboReading::Amiibo)) return true;
+            amiibo_reading_ = static_cast<ExternalAmiiboReading>(body[0]);
             return true;
         case ExternalControl::Shutdown:
             if (error != nullptr) *error = "the game closed";
@@ -1526,6 +1532,7 @@ void ExternalFrameProducer::close() {
     options_wanted_ = false;
     option_changes_.clear();
     amiibo_scans_.clear();
+    sent_amiibo_reading_.reset();
     game_dialogs_wanted_ = false;
     game_dialog_answers_.clear();
     inbox_.clear();
@@ -1806,6 +1813,13 @@ void ExternalFrameProducer::send_amiibo_result(ExternalAmiiboResult result) {
     std::vector<uint8_t> message;
     frame_message(ExternalControl::AmiiboScanned, {static_cast<uint8_t>(result)}, message);
     write_all(fd_, message.data(), message.size());
+}
+
+void ExternalFrameProducer::send_amiibo_reading(ExternalAmiiboReading reading) {
+    if (fd_ < 0 || sent_amiibo_reading_ == reading) return;
+    std::vector<uint8_t> message;
+    frame_message(ExternalControl::AmiiboReading, {static_cast<uint8_t>(reading)}, message);
+    if (write_all(fd_, message.data(), message.size())) sent_amiibo_reading_ = reading;
 }
 
 void ExternalFrameProducer::send_game_dialog(const ExternalGameDialog& dialog) {
@@ -2151,6 +2165,7 @@ bool ExternalFrameProducer::take_option_change(std::string&, int&) { return fals
 void ExternalFrameProducer::send_options(const std::vector<ExternalOption>&) {}
 bool ExternalFrameProducer::take_amiibo_scan(std::string&) { return false; }
 void ExternalFrameProducer::send_amiibo_result(ExternalAmiiboResult) {}
+void ExternalFrameProducer::send_amiibo_reading(ExternalAmiiboReading) {}
 void ExternalFrameProducer::send_game_dialog(const ExternalGameDialog&) {}
 bool ExternalFrameProducer::take_game_dialog_answer(ExternalGameDialogAnswer&) { return false; }
 bool ExternalFrameProducer::take_overlay(std::vector<uint8_t>&, int&, int&) { return false; }
