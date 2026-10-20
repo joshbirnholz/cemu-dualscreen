@@ -18,6 +18,8 @@
 #include "Cafe/OS/libs/swkbd/swkbd.h"
 
 #include "DualscreenSession.h"
+#include "Cafe/OS/libs/nn_nfp/nn_nfp.h"
+#include "Cafe/OS/libs/nfc/nfc.h"
 #include <imgui.h>
 #include <chrono>
 
@@ -883,6 +885,16 @@ static void LatteRenderTarget_handleDualscreenPause()
 		else
 			coreinit::DualscreenRequestForeground();
 	}
+	// And what the game is looking for, which the session cannot ask nn_nfp
+	// or nfc itself: an amiibo is only looked for between nn_nfp's
+	// StartDetection and StopDetection, and a game reading its own figures
+	// does so through nfc -- see ScanAmiibo() in DualscreenRequests.cpp.
+	ds::ExternalAmiiboReading reading = ds::ExternalAmiiboReading::Nothing;
+	if (nnNfp_isDetecting())
+		reading = ds::ExternalAmiiboReading::Amiibo;
+	else if (nfc::NFCIsInit(0))
+		reading = ds::ExternalAmiiboReading::OwnFigures;
+	DualscreenSession::instance().SetAmiiboReading(reading);
 }
 
 void LatteRenderTarget_tapDualscreen(LatteTextureView* textureView, bool screenIsPad)

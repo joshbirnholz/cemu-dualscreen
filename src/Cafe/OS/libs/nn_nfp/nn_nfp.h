@@ -12,6 +12,8 @@ void nnNfp_load();
 void nnNfp_update();
 
 bool nnNfp_isInitialized();
+// Whether the game is looking for an amiibo now: between its StartDetection and StopDetection.
+bool nnNfp_isDetecting();
 bool nnNfp_touchNfcTagFromFile(const fs::path& filePath, uint32* nfcError);
 
 #define NFP_STATE_NONE			(0)

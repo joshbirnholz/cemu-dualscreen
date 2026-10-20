@@ -234,6 +234,10 @@ public:
 	void SendOptions(const std::vector<ds::ExternalOption>& options);
 	bool TakeAmiiboScan(std::string& path);
 	void SendAmiiboResult(ds::ExternalAmiiboResult result);
+	// What the game is looking for now, said to Dualscreen when it changes --
+	// see kExternalFeatureAmiiboReading. Called every frame from the GPU
+	// thread, which can reach nn_nfp and nfc, as the session cannot.
+	void SetAmiiboReading(ds::ExternalAmiiboReading reading);
 	// Which players something is feeding, when that has changed since last
 	// asked: a pad unplugged, or unassigned in Dualscreen's Controller Order,
 	// stops feeding its player. `attached` is false once no shell is, when

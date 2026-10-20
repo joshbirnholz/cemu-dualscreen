@@ -757,6 +757,14 @@ bool nnNfp_isInitialized()
 	return nfp_data.nfpIsInitialized;
 }
 
+bool nnNfp_isDetecting()
+{
+	nnNfpLock();
+	const bool detecting = nfp_data.nfpIsInitialized && nfp_data.isDetecting;
+	nnNfpUnlock();
+	return detecting;
+}
+
 // CEMU NFC error codes
 #define NFC_ERROR_NONE					(0)
 #define NFC_ERROR_NO_ACCESS				(1)
