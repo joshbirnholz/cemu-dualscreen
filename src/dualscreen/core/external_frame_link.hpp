@@ -359,6 +359,7 @@ enum class ExternalControl : uint8_t {
     // producer's window has the keyboard then, and only the consumer knows
     // what its menu does with a key. Ups as well as downs, so a held arrow
     // can repeat on the consumer's side as one held in its own window does.
+    // ExternalMenuKey::Open alone is sent while the overlay is not up.
     MenuKeyboard = 17,
     // consumer -> producer, "tell me the game's graphics packs", answered with
     // GraphicPacks. Only to a producer whose Hello said
@@ -441,6 +442,9 @@ enum class ExternalMenuKey : uint8_t {
     Reset,       // F5
     Quit,        // F6
     Disconnect,  // F7
+    // Escape while the menu is not up: opens it, and never closes it, as
+    // Escape does in the consumer's own window while a game plays.
+    Open,
     Count
 };
 

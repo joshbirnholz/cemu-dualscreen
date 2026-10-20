@@ -19,6 +19,7 @@
 #include "wxgui/MainWindow.h"
 #include "wxgui/helpers/wxHelpers.h"
 #include "input/InputManager.h"
+#include "DualscreenSession.h"
 
 #if BOOST_OS_LINUX || BOOST_OS_MACOS || BOOST_OS_BSD
 #include "resource/embedded/resources.h"
@@ -171,7 +172,16 @@ void PadViewFrame::OnKeyUp(wxKeyEvent& event)
 		return;
 
 	const auto code = event.GetKeyCode();
-	if (code == WXK_ESCAPE)
+	// With Dualscreen attached, Escape opens its menu, as in the main window.
+	if (code == WXK_ESCAPE && DualscreenSession::instance().IsRunning())
+	{
+		if (!event.HasAnyModifiers() && !DualscreenSession::instance().OverlayTakesInput())
+		{
+			DualscreenSession::instance().SendMenuKeyboard(ds::ExternalMenuKey::Open, true);
+			DualscreenSession::instance().SendMenuKeyboard(ds::ExternalMenuKey::Open, false);
+		}
+	}
+	else if (code == WXK_ESCAPE)
 		ShowFullScreen(false);
 	else if (code == WXK_RETURN && event.AltDown() || code == WXK_F11)
 		ShowFullScreen(!IsFullScreen());
