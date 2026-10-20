@@ -1527,8 +1527,8 @@ void MainWindow::OnSetWindowTitle(wxCommandEvent& event)
 
 // The keys Dualscreen's menu answers, while it is over this window -- see
 // DualscreenSession::SendMenuKeyboard(). This window has the keyboard then, so
-// only it can hear them. Not F1, which is the menu's own key, and Escape only
-// as Back: it never opens the menu from here.
+// only it can hear them. Not F1, which is the menu's own key. Escape is Back
+// here; with the menu not up, OnCharHook() sends it as Open instead.
 static std::optional<ds::ExternalMenuKey> DualscreenMenuKeyFor(const wxKeyEvent& event)
 {
 	if (event.HasAnyModifiers())
@@ -1583,6 +1583,10 @@ void MainWindow::OnKeyUp(wxKeyEvent& event)
 		DualscreenSession::instance().SendMenuKey();
 		return;
 	}
+	// Escape is Dualscreen's too then -- see OnCharHook() -- so it does not
+	// leave fullscreen as well.
+	if (event.GetKeyCode() == WXK_ESCAPE && !event.HasAnyModifiers() && DualscreenSession::instance().IsRunning())
+		return;
 
 	HotkeySettings::CaptureInput(event);
 }
@@ -1591,6 +1595,22 @@ void MainWindow::OnKeyUp(wxKeyEvent& event)
 // here is the menu's while Dualscreen's is up, and Cemu's otherwise.
 void MainWindow::OnCharHook(wxKeyEvent& event)
 {
+	// Escape with Dualscreen's menu not up opens it, as Escape does in
+	// Dualscreen's own window while a game plays, rather than leaving
+	// fullscreen -- F11 and Alt+Enter still do that. Its repeats, held, are
+	// dropped, so the menu it opened is not then taken for Back.
+	if (event.GetKeyCode() == WXK_ESCAPE && !event.HasAnyModifiers() && !swkbd_hasKeyboardInputHook() &&
+		DualscreenSession::instance().IsRunning())
+	{
+		if (event.IsAutoRepeat())
+			return;
+		if (!DualscreenSession::instance().OverlayTakesInput())
+		{
+			DualscreenSession::instance().SendMenuKeyboard(ds::ExternalMenuKey::Open, true);
+			DualscreenSession::instance().SendMenuKeyboard(ds::ExternalMenuKey::Open, false);
+			return;
+		}
+	}
 	if (DualscreenSession::instance().OverlayTakesInput() && !swkbd_hasKeyboardInputHook())
 	{
 		if (const auto key = DualscreenMenuKeyFor(event))
