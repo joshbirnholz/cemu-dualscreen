@@ -36,17 +36,26 @@ inline constexpr int kAudioStreamStoppedMs = 500;
 // where it was (see AudioStretcher), so a game at eighty percent sounds like
 // a game at eighty percent rather than like a broken speaker.
 //
-// Measured over this much wall clock, which is long enough that a frame or
-// two arriving a few milliseconds early or late moves the reading by a
-// percent or two, and short enough that a slowdown is caught within about two
-// of these.
-inline constexpr int kAudioSpeedWindowMs = 500;
+// Measured over this much wall clock: long enough that a frame arriving a few
+// milliseconds early or late moves the reading by well under the half a
+// percent that separates the two thresholds below. A slowdown is still caught
+// quickly, because it does not have to fill the window to cross the first of
+// them: a game at eighty percent has pulled the reading under it within a
+// tenth of a second.
+inline constexpr int kAudioSpeedWindowMs = 1000;
 // Stretching starts once the source falls under this fraction of real time,
 // and stops once it is back above the second. Apart, so a source hovering
-// near one does not flip between the two. The gap between the first and full
-// speed is ordinary drift, and left to the rate correction and the cover.
-inline constexpr double kAudioStretchBelowSpeed = 0.94;
-inline constexpr double kAudioStretchUntilSpeed = 0.98;
+// near one does not flip between the two -- and a flip would cost nothing
+// anyway, since finish() carries straight on.
+//
+// Close to one on purpose. These were 0.94 and 0.98 at first, on the idea
+// that a few percent slow was drift for the rate correction to take up. It is
+// not: that correction is held to kAudioMaxRateAdjust, so a game at 96 percent
+// sat with it pinned a percent flat -- every note audibly lower -- while the
+// queue still ran dry eight times a second. Anything slower than the rate
+// correction can follow is the stretch's.
+inline constexpr double kAudioStretchBelowSpeed = 0.985;
+inline constexpr double kAudioStretchUntilSpeed = 0.995;
 // The most a block is ever stretched by. A game at a quarter speed is not one
 // anyone is going to be playing for its sound, and WSOLA much past this is
 // more echo than music.
