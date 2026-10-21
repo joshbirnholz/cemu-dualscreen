@@ -6,6 +6,8 @@ from the Dualscreen project, which is the other end of this link:
     dual-screen/src/core/external_frame_link.hpp  ->  core/external_frame_link.hpp
     dual-screen/src/core/external_frame_link.cpp  ->  core/external_frame_link.cpp
     dual-screen/src/layout/screen_id.hpp          ->  layout/screen_id.hpp
+    dual-screen/src/audio/audio_stretch.hpp       ->  audio/audio_stretch.hpp
+    dual-screen/src/audio/audio_stretch.cpp       ->  audio/audio_stretch.cpp
 
 They are unmodified on purpose. Re-syncing is a copy and a diff rather than a
 merge, and `git diff --no-index` against that tree should be empty. The
@@ -13,7 +15,7 @@ directory layout above is why: it keeps the `#include` lines inside them
 correct without editing them.
 
 Dualscreen has a test (`external_link_stands_alone`) that compiles exactly these
-three files with nothing else of that project on the include path, so what is
+files with nothing else of that project on the include path, so what is
 here cannot quietly grow a dependency on the rest of it.
 
 ## What it is
@@ -39,7 +41,9 @@ Nothing in these files. The parts that are Cemu's own live where they belong:
 - `Cafe/HW/Latte/Renderer/` -- the frame tap and the readback that feeds it
 - `input/emulated/VPADController.cpp` -- taking the pad from the link
 - `OS/libs/snd_core/ax_out.cpp` -- sending TV and GamePad audio as their own
-  streams and silencing Cemu's own output for both while connected
+  streams and silencing Cemu's own output for both while connected, and
+  slowing the screen it plays itself down with a game that cannot keep up
+  (`audio/audio_stretch.*`) rather than letting the device run dry
 - `Cafe/CafeSystem.cpp` -- starting and ending the session with the title
 - `config/LaunchSettings.cpp` -- `--dualscreen-socket`
 

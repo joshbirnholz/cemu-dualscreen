@@ -5,6 +5,9 @@
 //#include "ax.h"
 #include "config/CemuConfig.h"
 #include "DualscreenSession.h"
+#include "audio/audio_stretch.hpp"
+
+#include <chrono>
 
 namespace coreinit
 {
@@ -171,6 +174,95 @@ namespace snd_core
 	sint16 tempDRCChannelData[AX_SAMPLES_MAX * 6 * AX_FRAMES_PER_GROUP] = {};
 	sint32 tempDRCAudioBlockCounter = 0;
 
+	// This machine's own playback of a screen, slowed down with a game that
+	// cannot keep up rather than left to run dry.
+	//
+	// Below full speed the game makes less than a second of sound a second,
+	// and the device fills each shortfall with silence: a gap every block or
+	// two, heard as the sound itself distorting for as long as the slowdown
+	// lasts. Dualscreen does the same for its own cores and for what it plays
+	// from here over the link; this is the same stretcher, vendored (see
+	// dualscreen/README.md), for the screen Cemu plays itself. Time is
+	// stretched, the pitch is left alone.
+	//
+	// The devices do not say how deep their queues are, only whether they want
+	// more (NeedAdditionalBlocks), so the stretch the measured speed calls for
+	// is trimmed by a slow correction that leans on that instead: up while the
+	// device keeps asking, down while it does not, which holds it near the
+	// depth it asks to be kept at.
+	class LocalAudioStretch
+	{
+	public:
+		void Feed(IAudioAPI& device, sint16* block, size_t frames)
+		{
+			const uint64 now = (uint64)std::chrono::duration_cast<std::chrono::milliseconds>(
+				std::chrono::steady_clock::now().time_since_epoch()).count();
+			m_speed.note(now, frames);
+			const double speed = m_speed.speed(48000.0);
+			if (!m_stretching && speed < ds::kAudioStretchBelowSpeed)
+			{
+				m_stretching = true;
+				cemuLog_logDebug(LogType::Force, "Dualscreen: game sound at {}% of real time, stretching it", (int)(speed * 100.0 + 0.5));
+			}
+			else if (m_stretching && speed > ds::kAudioStretchUntilSpeed)
+			{
+				m_stretching = false;
+				cemuLog_logDebug(LogType::Force, "Dualscreen: game sound back up to real time");
+			}
+
+			if (!m_stretching && !m_stretcher.holding() && m_carry.empty())
+			{
+				device.FeedBlock(block);
+				return;
+			}
+			if (m_stretching)
+			{
+				m_correction = std::clamp(m_correction * (device.NeedAdditionalBlocks() ? 1.003 : 0.997), 0.85, 1.15);
+				const double stretch = std::clamp(ds::audio_stretch_for(speed, 1, 1) * m_correction, 0.9, ds::kAudioMaxStretch);
+				m_stretcher.process(block, frames, stretch, m_carry);
+			}
+			else
+			{
+				// What the stretcher held back, carrying straight on from
+				// where it left off, then this block as it is.
+				m_stretcher.finish(m_carry);
+				m_carry.insert(m_carry.end(), block, block + frames * 2);
+				m_correction = 1.0;
+			}
+			// The devices take whole blocks.
+			const size_t blockSamples = frames * 2;
+			size_t fed = 0;
+			while (m_carry.size() - fed >= blockSamples)
+			{
+				device.FeedBlock(m_carry.data() + fed);
+				fed += blockSamples;
+			}
+			m_carry.erase(m_carry.begin(), m_carry.begin() + fed);
+		}
+
+	private:
+		ds::AudioSourceSpeed m_speed;
+		ds::AudioStretcher m_stretcher;
+		std::vector<sint16> m_carry;
+		bool m_stretching = false;
+		double m_correction = 1.0;
+	};
+
+	LocalAudioStretch s_tvLocalStretch;
+	LocalAudioStretch s_drcLocalStretch;
+
+	// Stereo only, which is all the stretcher handles; anything else is fed
+	// as it comes, exactly as before.
+	void FeedLocally(IAudioAPI& device, LocalAudioStretch& stretch, sint16* block, uint32 channels)
+	{
+		if (channels != 2)
+		{
+			device.FeedBlock(block);
+			return;
+		}
+		stretch.Feed(device, block, AX_SAMPLES_PER_3MS_48KHZ * AX_FRAMES_PER_GROUP);
+	}
+
 	void AIInitDMA(sint16* sampleData, sint32 size)
 	{
 		sint32 sampleCount = size / sizeof(sint16); // sample count in total (summed up for all channels)
@@ -222,7 +314,7 @@ namespace snd_core
 				if (!wanted)
 				{
 					if (DualscreenSession::instance().ShouldPlayLocally(ds::ScreenId::Top))
-						g_tvAudio->FeedBlock(tempTVChannelData);
+						FeedLocally(*g_tvAudio, s_tvLocalStretch, tempTVChannelData, channels);
 				}
 				else if (channels == 2)
 				{
@@ -399,7 +491,7 @@ namespace snd_core
 					// either -- see the TV path above, and
 					// ShouldPlayLocally().
 					if (DualscreenSession::instance().ShouldPlayLocally(ds::ScreenId::Bottom))
-						g_padAudio->FeedBlock(tempDRCChannelData);
+						FeedLocally(*g_padAudio, s_drcLocalStretch, tempDRCChannelData, channels);
 				}
 				else if (channels == 2)
 				{

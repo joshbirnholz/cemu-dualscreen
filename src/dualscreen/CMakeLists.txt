@@ -7,6 +7,8 @@
 add_library(CemuDualscreen
 	DualscreenSession.cpp
 	DualscreenSession.h
+	audio/audio_stretch.cpp
+	audio/audio_stretch.hpp
 	core/external_frame_link.cpp
 	core/external_frame_link.hpp
 	layout/screen_id.hpp
