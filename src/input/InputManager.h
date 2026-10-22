@@ -50,6 +50,11 @@ public:
 	void Shutdown(); 
 	
 	EmulatedControllerPtr set_controller(EmulatedControllerPtr controller);
+	// The same, a Wii Remote or Pro Controller taking WPAD channel `channel`
+	// whatever is plugged in first: a game numbers its players by channel,
+	// so one plugged back in after another must not take the other's.
+	// Whatever was there moves to the first free channel.
+	EmulatedControllerPtr set_controller(EmulatedControllerPtr controller, size_t channel);
 	EmulatedControllerPtr set_controller(size_t player_index, EmulatedController::Type type);
 	EmulatedControllerPtr set_controller(size_t player_index, EmulatedController::Type type, const std::shared_ptr<ControllerBase>& controller);
 
