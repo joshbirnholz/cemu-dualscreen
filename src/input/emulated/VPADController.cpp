@@ -749,6 +749,8 @@ bool VPADController::set_default_mapping(const std::shared_ptr<ControllerBase>& 
 			{kButtonId_StickL, kButton14},
 			{kButtonId_StickR, kButton15},
 
+			{kButtonId_Home, kButton16},
+
 			// The sticks arrive with y positive up -- see the conversion in
 			// DualScreenController::raw_state -- so up is the positive axis,
 			// as it is for XInput below rather than for SDL above.

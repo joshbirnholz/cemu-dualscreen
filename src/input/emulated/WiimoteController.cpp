@@ -62,30 +62,30 @@ bool WiimoteController::set_default_mapping(const std::shared_ptr<ControllerBase
 #if HAS_DUALSCREEN_INPUT
 	case InputAPI::DualScreen:
 	{
-		// A player's pad, in ds::ExternalButton order (a Wii U GamePad's
-		// buttons), laid onto a Wii Remote held upright with a Nunchuk: A and
-		// B where a pad has them, 1 on the north face button (X) and 2 on the
-		// west one (Y) -- 1 above 2, as they sit on the remote -- the
-		// Nunchuk's Z and C on the left shoulder and trigger, and its stick on
-		// the left stick. Home has nowhere to come from -- the link carries no
-		// Home button -- so it is left for the player to map.
+		// A player's pad arrives already a Wii Remote's -- Dualscreen maps it
+		// -- on ds::ExternalButton's Remote buttons, One and Two, and the
+		// Nunchuk's C and Z, its stick the left one. Each straight across. A
+		// remote fed by Dualscreen alone reads them directly, Classic
+		// Controller and all -- see WPADController::read_dualscreen -- so
+		// this is what Cemu's own settings show.
 		mapping =
 		{
-			{kButtonId_A, kButton0},
-			{kButtonId_B, kButton1},
-			{kButtonId_1, kButton2},
-			{kButtonId_2, kButton3},
+			{kButtonId_A, kButton21},
+			{kButtonId_B, kButton22},
+			{kButtonId_1, kButton17},
+			{kButtonId_2, kButton18},
 
-			{kButtonId_Plus, kButton8},
-			{kButtonId_Minus, kButton9},
+			{kButtonId_Plus, kButton23},
+			{kButtonId_Minus, kButton24},
+			{kButtonId_Home, kButton25},
 
-			{kButtonId_Up, kButton10},
-			{kButtonId_Down, kButton11},
-			{kButtonId_Left, kButton12},
-			{kButtonId_Right, kButton13},
+			{kButtonId_Up, kButton26},
+			{kButtonId_Down, kButton27},
+			{kButtonId_Left, kButton28},
+			{kButtonId_Right, kButton29},
 
-			{kButtonId_Nunchuck_Z, kButton6},
-			{kButtonId_Nunchuck_C, kButton4},
+			{kButtonId_Nunchuck_Z, kButton20},
+			{kButtonId_Nunchuck_C, kButton19},
 
 			{kButtonId_Nunchuck_Up, kAxisYP},
 			{kButtonId_Nunchuck_Down, kAxisYN},

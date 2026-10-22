@@ -11,8 +11,9 @@
 //
 // Its raw buttons are the sixteen a Wii U GamePad has, in the order the link
 // carries them (ds::ExternalButton), so kButton0 is A and kButton15 is the
-// right stick click. They come out under those names in the input settings
-// rather than as bare numbers, and VPADController::set_default_mapping wires
+// right stick click -- then Home, and a Wii Remote's and a Nunchuk's own.
+// They come out under those names in the input settings rather than as bare
+// numbers, and VPADController::set_default_mapping wires
 // them straight through, which is what keeps a fresh session working with
 // nothing configured.
 class DualScreenController : public Controller<DualScreenControllerProvider>
@@ -57,6 +58,12 @@ public:
 
 	std::string get_button_name(uint64 button) const override;
 
+	// This controller's pad, from whichever half of the link carries it: a
+	// player's buttons already as the game's controller has them -- see
+	// ds::ExternalButton -- which a Wii Remote or Pro Controller fed by this
+	// alone reads directly. False with nothing feeding it.
+	bool read_pad(ds::ExternalInput& out) const;
+
 protected:
 	ControllerState raw_state() override;
 
@@ -71,6 +78,4 @@ private:
 	// Which controller this is: -1 for the GamePad, else the player.
 	int m_player = -1;
 	bool m_reported = false;
-	// This controller's pad, from whichever half of the link carries it.
-	bool read_pad(ds::ExternalInput& out) const;
 };

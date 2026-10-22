@@ -18,6 +18,12 @@ namespace
 		"+", "-",
 		"Up", "Down", "Left", "Right",
 		"Stick L", "Stick R",
+		"Home",
+		"1", "2",
+		"C", "Z",
+		"Remote A", "Remote B",
+		"Remote +", "Remote -", "Remote Home",
+		"Remote Up", "Remote Down", "Remote Left", "Remote Right",
 	};
 	constexpr size_t kButtonCount = std::size(kButtonNames);
 

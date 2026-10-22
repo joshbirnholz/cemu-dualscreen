@@ -254,6 +254,8 @@ bool ProController::set_default_mapping(const std::shared_ptr<ControllerBase>& c
 			{kButtonId_StickL, kButton14},
 			{kButtonId_StickR, kButton15},
 
+			{kButtonId_Home, kButton16},
+
 			{kButtonId_StickL_Up, kAxisYP},
 			{kButtonId_StickL_Down, kAxisYN},
 			{kButtonId_StickL_Left, kAxisXN},
