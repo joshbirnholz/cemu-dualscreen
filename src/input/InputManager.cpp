@@ -609,6 +609,38 @@ EmulatedControllerPtr InputManager::set_controller(EmulatedControllerPtr control
 	return prev_controller;
 }
 
+EmulatedControllerPtr InputManager::set_controller(EmulatedControllerPtr controller, size_t channel)
+{
+	if (controller->type() == EmulatedController::Type::VPAD || channel >= kMaxWPADControllers)
+		return set_controller(controller);
+	auto prev_controller = delete_controller(controller->player_index());
+	if (prev_controller && controller->get_controllers().empty())
+	{
+		for (const auto& c : prev_controller->get_controllers())
+			controller->add_controller(c);
+	}
+
+	std::scoped_lock lock(m_mutex);
+	if (m_wpad[channel])
+	{
+		for (auto& pad : m_wpad)
+		{
+			if (!pad)
+			{
+				pad.swap(m_wpad[channel]);
+				break;
+			}
+		}
+	}
+	if (m_wpad[channel])
+	{
+		cemu_assert_debug(false);
+		return prev_controller;
+	}
+	m_wpad[channel] = std::move(controller);
+	return prev_controller;
+}
+
 EmulatedControllerPtr InputManager::set_controller(size_t player_index, EmulatedController::Type type)
 {
 	try

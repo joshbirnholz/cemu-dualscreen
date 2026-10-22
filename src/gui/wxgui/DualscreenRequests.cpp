@@ -284,7 +284,9 @@ namespace
 			if (previous)
 				wpad->m_status = WPADController::ConnectCallbackStatus::ReportDisconnect;
 		}
-		input.set_controller(emulated);
+		// On the player's own channel, whichever comes back first: a game
+		// numbers its players by channel, not by Cemu's slots.
+		input.set_controller(emulated, static_cast<size_t>(player));
 		cemuLog_log(LogType::Force, "Dualscreen: Player {} is now a {}", player + 1, kPlayerTypeChoices[choice]);
 	}
 
