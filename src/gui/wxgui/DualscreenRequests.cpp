@@ -271,7 +271,21 @@ namespace
 			std::static_pointer_cast<WiimoteController>(emulated)->set_device_type(
 				choice == 3 ? kWAPDevFreestyle : choice == 4 ? kWAPDevClassic : kWAPDevCore);
 		}
+		if (const auto wpad = std::dynamic_pointer_cast<WPADController>(emulated))
+		{
+			// Read as what it now is -- a Nunchuk's stick and buttons are not
+			// in a bare remote's report -- until the game asks for another.
+			wpad->set_data_format(wpad->get_default_data_format());
+			// One swapped for another in the same slot is unplugged and
+			// plugged back in, as a real one would be. Otherwise the game,
+			// which never heard the old one go, keeps reading the new one in
+			// the format it asked the old one for, or not at all -- the
+			// controller that did nothing once its type was changed.
+			if (previous)
+				wpad->m_status = WPADController::ConnectCallbackStatus::ReportDisconnect;
+		}
 		input.set_controller(emulated);
+		cemuLog_log(LogType::Force, "Dualscreen: Player {} is now a {}", player + 1, kPlayerTypeChoices[choice]);
 	}
 
 	// What each player was when Cemu started -- its controller profiles, or
