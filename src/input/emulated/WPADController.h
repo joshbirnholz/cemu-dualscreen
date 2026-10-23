@@ -4,6 +4,8 @@
 #include "Cafe/OS/libs/padscore/padscore.h"
 #include "Cafe/OS/libs/vpad/vpad.h"
 
+namespace ds { struct ExternalInput; }
+
 constexpr uint32 kWPADButtonRepeat = 0x80000000;
 
 enum WPADDeviceType
@@ -138,8 +140,19 @@ protected:
 
 private:
 	uint32be m_last_holdvalue = 0;
+	// The Classic Controller's, for one plugged into a Wii Remote Dualscreen
+	// feeds -- see read_dualscreen().
+	uint32be m_last_classic_holdvalue = 0;
 
 	std::chrono::steady_clock::time_point m_last_hold_change{}, m_last_pulse{};
+
+	// The pad of the one Dualscreen player feeding this alone, and its sticks
+	// as Cemu's settings have them: its buttons are already this controller's
+	// -- Dualscreen maps them -- so they are read straight across rather than
+	// through a mapping, which is what lets a Wii Remote with a Classic
+	// Controller in it have both its own buttons and the Classic
+	// Controller's. False for anything else feeding it.
+	bool read_dualscreen(ds::ExternalInput& out, glm::vec2& axis, glm::vec2& rotation) const;
 
 	
 };

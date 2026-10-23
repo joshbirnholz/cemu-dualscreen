@@ -232,6 +232,7 @@ bool ClassicController::set_default_mapping(const std::shared_ptr<ControllerBase
 
 			{kButtonId_Plus, kButton8},
 			{kButtonId_Minus, kButton9},
+			{kButtonId_Home, kButton16},
 
 			{kButtonId_Up, kButton10},
 			{kButtonId_Down, kButton11},

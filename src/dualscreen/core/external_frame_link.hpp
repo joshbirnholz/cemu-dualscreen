@@ -462,12 +462,25 @@ inline constexpr int kExternalPlayers = 8;
 // than exporting that shape to somebody else's tree.
 //
 // The order is the wire format, so entries are only ever added at the end.
+//
+// A player's are the buttons of whatever the game has it as, already mapped
+// by the consumer: a Pro Controller's or a Classic Controller's in the
+// GamePad's names they share, plus Home; a Wii Remote's own on the Remote
+// ones with One and Two, whatever is plugged into it -- so a Classic
+// Controller's A and the remote's A are two buttons -- and a Nunchuk's C and
+// Z, its stick the left one.
 enum class ExternalButton : uint8_t {
     A, B, X, Y,
     L, R, Zl, Zr,
     Plus, Minus,
     Up, Down, Left, Right,
     LeftStick, RightStick,
+    Home,
+    One, Two,
+    NunchukC, NunchukZ,
+    RemoteA, RemoteB,
+    RemotePlus, RemoteMinus, RemoteHome,
+    RemoteUp, RemoteDown, RemoteLeft, RemoteRight,
 };
 
 // How a GamePad is being held and moved, as read off whatever device is

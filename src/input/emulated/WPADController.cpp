@@ -4,11 +4,104 @@
 #include "input/emulated/ClassicController.h"
 #include "input/emulated/ProController.h"
 #include "input/emulated/WiimoteController.h"
+#include "input/api/DualScreen/DualScreenControllerProvider.h"
+#if HAS_DUALSCREEN_INPUT
+#include "input/api/DualScreen/DualScreenController.h"
+#endif
 
 WPADController::WPADController(size_t player_index, WPADDataFormat data_format)
 	: EmulatedController(player_index), m_data_format(data_format)
 {
 }
+
+#if HAS_DUALSCREEN_INPUT
+namespace
+{
+	using ds::ExternalButton;
+
+	template<size_t N>
+	uint32 flags_of(const ds::ExternalInput& pad, const std::pair<ExternalButton, uint32> (&table)[N])
+	{
+		uint32 flags = 0;
+		for (const auto& [button, flag] : table)
+		{
+			if (pad.pressed(button))
+				flags |= flag;
+		}
+		return flags;
+	}
+
+	// The remote's own, and a Nunchuk's, which a remote reports with them.
+	uint32 remote_buttons(const ds::ExternalInput& pad)
+	{
+		static constexpr std::pair<ExternalButton, uint32> kRemote[] = {
+			{ExternalButton::RemoteA, kWPADButton_A},       {ExternalButton::RemoteB, kWPADButton_B},
+			{ExternalButton::One, kWPADButton_1},           {ExternalButton::Two, kWPADButton_2},
+			{ExternalButton::RemotePlus, kWPADButton_Plus}, {ExternalButton::RemoteMinus, kWPADButton_Minus},
+			{ExternalButton::RemoteHome, kWPADButton_Home}, {ExternalButton::RemoteUp, kWPADButton_Up},
+			{ExternalButton::RemoteDown, kWPADButton_Down}, {ExternalButton::RemoteLeft, kWPADButton_Left},
+			{ExternalButton::RemoteRight, kWPADButton_Right},
+			{ExternalButton::NunchukC, kWPADButton_C},      {ExternalButton::NunchukZ, kWPADButton_Z},
+		};
+		return flags_of(pad, kRemote);
+	}
+
+	uint32 classic_buttons(const ds::ExternalInput& pad)
+	{
+		static constexpr std::pair<ExternalButton, uint32> kClassic[] = {
+			{ExternalButton::A, kCLButton_A},       {ExternalButton::B, kCLButton_B},
+			{ExternalButton::X, kCLButton_X},       {ExternalButton::Y, kCLButton_Y},
+			{ExternalButton::L, kCLButton_L},       {ExternalButton::R, kCLButton_R},
+			{ExternalButton::Zl, kCLButton_ZL},     {ExternalButton::Zr, kCLButton_ZR},
+			{ExternalButton::Plus, kCLButton_Plus}, {ExternalButton::Minus, kCLButton_Minus},
+			{ExternalButton::Home, kCLButton_Home}, {ExternalButton::Up, kCLButton_Up},
+			{ExternalButton::Down, kCLButton_Down}, {ExternalButton::Left, kCLButton_Left},
+			{ExternalButton::Right, kCLButton_Right},
+		};
+		return flags_of(pad, kClassic);
+	}
+
+	uint32 pro_buttons(const ds::ExternalInput& pad)
+	{
+		static constexpr std::pair<ExternalButton, uint32> kPro[] = {
+			{ExternalButton::A, kProButton_A},       {ExternalButton::B, kProButton_B},
+			{ExternalButton::X, kProButton_X},       {ExternalButton::Y, kProButton_Y},
+			{ExternalButton::L, kProButton_L},       {ExternalButton::R, kProButton_R},
+			{ExternalButton::Zl, kProButton_ZL},     {ExternalButton::Zr, kProButton_ZR},
+			{ExternalButton::Plus, kProButton_Plus}, {ExternalButton::Minus, kProButton_Minus},
+			{ExternalButton::Home, kProButton_Home}, {ExternalButton::Up, kProButton_Up},
+			{ExternalButton::Down, kProButton_Down}, {ExternalButton::Left, kProButton_Left},
+			{ExternalButton::Right, kProButton_Right},
+			{ExternalButton::LeftStick, kProButton_StickL}, {ExternalButton::RightStick, kProButton_StickR},
+		};
+		return flags_of(pad, kPro);
+	}
+
+	bool is_classic_format(WPADDataFormat format)
+	{
+		return format == kDataFormat_CLASSIC || format == kDataFormat_CLASSIC_ACC ||
+			   format == kDataFormat_CLASSIC_ACC_DPD;
+	}
+}
+
+bool WPADController::read_dualscreen(ds::ExternalInput& out, glm::vec2& axis, glm::vec2& rotation) const
+{
+	const auto& feeding = get_controllers();
+	if (feeding.size() != 1 || feeding.front()->api() != InputAPI::DualScreen)
+		return false;
+	const auto controller = std::static_pointer_cast<DualScreenController>(feeding.front());
+	if (!controller->read_pad(out))
+		return false;
+	axis = controller->get_state().axis;
+	rotation = controller->get_state().rotation;
+	return true;
+}
+#else
+bool WPADController::read_dualscreen(ds::ExternalInput&, glm::vec2&, glm::vec2&) const
+{
+	return false;
+}
+#endif
 
 WPADDataFormat WPADController::get_default_data_format() const
 {
@@ -80,6 +173,20 @@ void WPADController::WPADRead(WPADStatus_t* status)
 
 	m_homebutton_down |= is_home_down();
 
+	// A Dualscreen player's buttons are this controller's already.
+	ds::ExternalInput fed;
+	glm::vec2 fed_axis{}, fed_rotation{};
+	const bool dualscreen = read_dualscreen(fed, fed_axis, fed_rotation);
+#if HAS_DUALSCREEN_INPUT
+	if (dualscreen)
+	{
+		button = get_device_type() == kWAPDevURCC ? pro_buttons(fed)
+				 : is_classic_format(m_data_format) ? classic_buttons(fed)
+													: remote_buttons(fed);
+		m_homebutton_down |= fed.pressed(ds::ExternalButton::Home) || fed.pressed(ds::ExternalButton::RemoteHome);
+	}
+#endif
+
 	// todo fill position api from wiimote
 
 	switch (m_data_format)
@@ -119,13 +226,18 @@ void WPADController::WPADRead(WPADStatus_t* status)
 		WPADCLStatus_t* ex_status = (WPADCLStatus_t*)status;
 		memset(ex_status, 0x00, sizeof(*ex_status));
 		ex_status->clButton = button;
+#if HAS_DUALSCREEN_INPUT
+		// The remote it is plugged into has buttons of its own.
+		if (dualscreen)
+			ex_status->button = remote_buttons(fed);
+#endif
 		
-		auto axis = get_axis();
+		auto axis = dualscreen ? fed_axis : get_axis();
 		axis *= 2048.0f;
 		ex_status->clLStickX = (uint16)axis.x;
 		ex_status->clLStickY = (uint16)axis.y;
 
-		auto rotation = get_rotation();
+		auto rotation = dualscreen ? fed_rotation : get_rotation();
 		rotation *= 2048.0f;
 		ex_status->clRStickX = (uint16)rotation.x;
 		ex_status->clRStickY = (uint16)rotation.y;
@@ -211,6 +323,22 @@ void WPADController::KPADRead(KPADStatus_t& status, const BtnRepeat& repeat)
 	}
 
 	m_homebutton_down |= is_home_down();
+
+	// A Dualscreen player's buttons are this controller's already: a Wii
+	// Remote's in the remote's place, and a Classic Controller plugged into
+	// it in its own, below.
+	ds::ExternalInput fed;
+	glm::vec2 fed_axis{}, fed_rotation{};
+	const bool dualscreen = read_dualscreen(fed, fed_axis, fed_rotation);
+#if HAS_DUALSCREEN_INPUT
+	if (dualscreen)
+	{
+		*hold = type() == Pro       ? pro_buttons(fed)
+				: type() == Classic ? classic_buttons(fed)
+									: remote_buttons(fed);
+		m_homebutton_down |= fed.pressed(ds::ExternalButton::Home) || fed.pressed(ds::ExternalButton::RemoteHome);
+	}
+#endif
 	
 	// button repeat
 	const auto now = std::chrono::steady_clock::now();
@@ -380,5 +508,23 @@ void WPADController::KPADRead(KPADStatus_t& status, const BtnRepeat& repeat)
 		cemu_assert(false);
 	}
 
-	
+#if HAS_DUALSCREEN_INPUT
+	// A Classic Controller in a Wii Remote: its own buttons and sticks, over
+	// the Nunchuk's that share their place.
+	if (dualscreen && type() == Wiimote && is_classic_format(m_data_format))
+	{
+		const uint32 classic = classic_buttons(fed);
+		const uint32 last = m_last_classic_holdvalue;
+		status.ex_status.cl.hold = classic;
+		status.ex_status.cl.trig = ~last & classic;
+		status.ex_status.cl.release = last & ~classic;
+		m_last_classic_holdvalue = classic;
+		status.ex_status.cl.lstick.x = fed_axis.x;
+		status.ex_status.cl.lstick.y = fed_axis.y;
+		status.ex_status.cl.rstick.x = fed_rotation.x;
+		status.ex_status.cl.rstick.y = fed_rotation.y;
+		status.ex_status.cl.ltrigger = HAS_FLAG(classic, kCLButton_ZL) ? 1.0f : 0.0f;
+		status.ex_status.cl.rtrigger = HAS_FLAG(classic, kCLButton_ZR) ? 1.0f : 0.0f;
+	}
+#endif
 }
