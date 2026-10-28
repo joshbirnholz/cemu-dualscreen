@@ -371,7 +371,9 @@ MainWindow::MainWindow()
 	LoadSettings();
 
 	#ifdef ENABLE_DISCORD_RPC
-	if (GetWxGUIConfig().use_discord_presence)
+	// Under Dualscreen, Dualscreen tells Discord what is being played itself,
+	// so a second "Playing Cemu" would only repeat it.
+	if (GetWxGUIConfig().use_discord_presence && LaunchSettings::GetDualscreenSocket().empty())
 			m_discord = std::make_unique<DiscordPresence>();
 	#endif
 
@@ -865,7 +867,7 @@ void MainWindow::OpenSettings()
 		SaveSettings();
 
 	#ifdef ENABLE_DISCORD_RPC
-	if (config.use_discord_presence)
+	if (config.use_discord_presence && LaunchSettings::GetDualscreenSocket().empty())
 	{
 		if (!m_discord)
 		{
