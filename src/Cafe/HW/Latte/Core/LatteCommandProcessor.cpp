@@ -33,6 +33,35 @@ bool LatteRenderTarget_dualscreenWhilePaused();
 
 void LatteThread_Exit();
 
+// While Dualscreen has the game paused the idle loop below waits a millisecond
+// at a time between redraws of the window -- see
+// LatteRenderTarget_dualscreenWhilePaused(). On Windows a plain sleep lasts
+// until the next tick of the system timer, about 15.6ms unless something has
+// asked for a finer one, and with a redraw due every 16.7ms that drew Cemu's
+// window, and Dualscreen's menu in it, at about 30 frames a second. A
+// high-resolution waitable timer wakes on time without changing the system's
+// timer for everything else.
+static void SleepAboutAMillisecond()
+{
+#if BOOST_OS_WINDOWS
+#ifndef CREATE_WAITABLE_TIMER_HIGH_RESOLUTION
+#define CREATE_WAITABLE_TIMER_HIGH_RESOLUTION 0x00000002
+#endif
+	// Windows 10 1803 and later; on older ones this falls through to a sleep.
+	static HANDLE s_timer = CreateWaitableTimerExW(nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION,
+												   TIMER_ALL_ACCESS);
+	if (s_timer)
+	{
+		LARGE_INTEGER due;
+		due.QuadPart = -10000; // one millisecond from now, in 100ns units
+		if (SetWaitableTimer(s_timer, &due, 0, nullptr, nullptr, FALSE) &&
+			WaitForSingleObject(s_timer, INFINITE) == WAIT_OBJECT_0)
+			return;
+	}
+#endif
+	std::this_thread::sleep_for(std::chrono::milliseconds(1));
+}
+
 class DrawPassContext
 {
 	struct CmdQueuePos
@@ -198,7 +227,7 @@ uint32 LatteCP_readU32Deprc()
 		// waits rather than spins: a whole core given back to the machine for
 		// the length of the menu, for a millisecond more when the game goes on.
 		if (paused)
-			std::this_thread::sleep_for(std::chrono::milliseconds(1));
+			SleepAboutAMillisecond();
 		else
 			std::this_thread::yield();
 		performanceMonitor.gpuTime_idleTime.endMeasuring();

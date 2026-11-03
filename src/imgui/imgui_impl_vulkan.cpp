@@ -1483,3 +1483,9 @@ void ImGui_ImplVulkan_DeleteTexture(ImTextureID id)
 
     *textureInfo = {};
 }
+
+void ImGui_ImplVulkan_DestroyTexture(ImTextureID id)
+{
+    ImGui_ImplVulkan_DeleteTexture(id);
+    delete (ImGuiTexture*)id;
+}

@@ -925,15 +925,19 @@ void LatteRenderTarget_tapDualscreen(LatteTextureView* textureView, bool screenI
 // the window at the shape Dualscreen drew it, with the dimming it has at its
 // edges carried out to the window's.
 //
-// A new picture goes into a new texture, made before ImGui's frame begins --
-// see g_imguiBeforeFrame -- and only drawn from two frames later, once its
-// upload has run, with the old one kept up meanwhile. The old one is deleted
-// then, which waits for the GPU, so new ones are made no more often than
-// every 50ms: plenty for a cursor moving through a menu.
+// Each new picture goes into a new texture, made before ImGui's frame begins
+// -- see g_imguiBeforeFrame -- outside any render pass, and drawn in that same
+// frame: its upload is recorded ahead of ImGui's draws, with a barrier between.
+// The one it replaces is deleted once the GPU has finished the frames that
+// drew it (DeleteTextureLater), never by waiting for the GPU to go idle, so
+// the menu here keeps up with every picture Dualscreen sends -- its scrolling,
+// the cursor's ring and the marquee at the rate they move in Dualscreen's own
+// window. (It used to wait for idle, and so made a texture at most every
+// 50ms, and drew each two frames late: about 20 pictures a second.)
 //
-// Too seldom for the menu coming up and going away, so that is animated here:
-// Dualscreen hands over what is behind the menu and the menu, once, and they
-// are faded and grown every frame with its own curves -- see
+// The menu coming up and going away is animated here: Dualscreen hands over
+// what is behind the menu and the menu, once, and they are faded and grown
+// every frame with its own curves -- see
 // DualscreenSession::TakeOverlayAnimation() and ds::ExternalOverlayAnimation.
 namespace
 {
@@ -945,16 +949,10 @@ namespace
 		uint8 edge[4] = {0, 0, 0, 0};
 	};
 	DualscreenMenuPicture s_menuShown;
-	DualscreenMenuPicture s_menuIncoming;
-	int s_menuIncomingFrames = 0;
 	std::vector<uint8> s_menuPixels;
-	int s_menuWidth = 0;
-	int s_menuHeight = 0;
-	bool s_menuPending = false;
-	std::chrono::steady_clock::time_point s_menuMade;
 
 	// The menu coming or going: its two pictures, used from two frames after
-	// they are made, as a still one is, and when the animation began.
+	// they are made, and when the animation began.
 	struct DualscreenMenuAnimation
 	{
 		DualscreenMenuPicture backdrop;
@@ -969,7 +967,7 @@ namespace
 	void ReleaseMenuPicture(DualscreenMenuPicture& picture)
 	{
 		if (picture.texture)
-			g_renderer->DeleteTexture(picture.texture);
+			g_renderer->DeleteTextureLater(picture.texture);
 		picture = DualscreenMenuPicture();
 	}
 
@@ -1007,8 +1005,7 @@ namespace
 			return;
 		DualscreenSession& session = DualscreenSession::instance();
 
-		// The menu starting to come or go: its pictures made at once, not
-		// held to the 50ms a still one waits.
+		// The menu starting to come or go: its pictures made at once.
 		ds::ExternalOverlayAnimationFrames frames;
 		if (session.TakeOverlayAnimation(frames) && frames.width > 0 && frames.height > 0 &&
 			frames.backdrop.size() == static_cast<size_t>(frames.width) * frames.height * 4 &&
@@ -1020,8 +1017,6 @@ namespace
 			s_menuAnimation.backdrop = MakeMenuPicture(backdrop, frames.width, frames.height);
 			s_menuAnimation.contents = MakeMenuPicture(contents, frames.width, frames.height);
 			s_menuAnimation.mode = frames.mode;
-			// What was waiting of the menu before it is older than this.
-			s_menuPending = false;
 		}
 		if (MenuAnimationHeld())
 		{
@@ -1030,7 +1025,6 @@ namespace
 				// Uploaded: it starts, and takes over from the picture before.
 				s_menuAnimation.running = true;
 				s_menuAnimation.began = std::chrono::steady_clock::now();
-				ReleaseMenuPicture(s_menuIncoming);
 				ReleaseMenuPicture(s_menuShown);
 			}
 			if (s_menuAnimation.running && ds::ExternalOverlayAnimation::done(s_menuAnimation.mode, MenuAnimationSeconds()))
@@ -1044,9 +1038,7 @@ namespace
 
 		if (!session.OverlayVisible())
 		{
-			ReleaseMenuPicture(s_menuIncoming);
 			ReleaseMenuPicture(s_menuShown);
-			s_menuPending = false;
 			// Taken down while it was going away: it finishes going first.
 			if (!leaving)
 				ReleaseMenuAnimation();
@@ -1058,25 +1050,14 @@ namespace
 		if (session.TakeOverlay(arrived, width, height) &&
 			arrived.size() == static_cast<size_t>(width) * height * 4)
 		{
+			// Every picture that arrives, drawn from this frame on.
 			s_menuPixels.assign(arrived.begin(), arrived.end());
-			s_menuWidth = width;
-			s_menuHeight = height;
-			s_menuPending = true;
-		}
-		if (s_menuIncoming.texture && ++s_menuIncomingFrames >= 2)
-		{
-			ReleaseMenuPicture(s_menuShown);
-			s_menuShown = s_menuIncoming;
-			s_menuIncoming = DualscreenMenuPicture();
-		}
-		const auto now = std::chrono::steady_clock::now();
-		if (s_menuPending && !s_menuIncoming.texture &&
-			now - s_menuMade >= std::chrono::milliseconds(50))
-		{
-			s_menuIncoming = MakeMenuPicture(s_menuPixels, s_menuWidth, s_menuHeight);
-			s_menuMade = now;
-			s_menuPending = false;
-			s_menuIncomingFrames = 0;
+			DualscreenMenuPicture picture = MakeMenuPicture(s_menuPixels, width, height);
+			if (picture.texture)
+			{
+				ReleaseMenuPicture(s_menuShown);
+				s_menuShown = picture;
+			}
 		}
 	}
 
@@ -1384,19 +1365,27 @@ void LatteRenderTarget_itHLECopyColorBufferToScanBuffer(MPTR colorBufferPtr, uin
 
 // A paused game flips no frames, and this window -- with Dualscreen's menu
 // drawn in it -- is only redrawn when one is flipped. So while Dualscreen has
-// the game paused, the GPU thread's idle loop shows the last frame again at
-// about the display's rate, and keeps reading the link, since nothing else
-// will until the game goes on. True while the game is paused.
+// the game paused, the GPU thread's idle loop shows the last frame again 60
+// times a second, and keeps reading the link, since nothing else will until
+// the game goes on. True while the game is paused.
+//
+// Each redraw is due a 60th of a second after the one before was due, not
+// after it happened: measured from when it happened, every wait's overshoot
+// was added to the next, and a frame that just missed its turn waited for
+// the one after.
 bool LatteRenderTarget_dualscreenWhilePaused()
 {
 	DualscreenSession& session = DualscreenSession::instance();
 	if (!session.GamePaused())
 		return false;
-	static std::chrono::steady_clock::time_point s_lastShown;
+	constexpr std::chrono::nanoseconds kInterval(16666667);
+	static std::chrono::steady_clock::time_point s_nextDue;
 	const auto now = std::chrono::steady_clock::now();
-	if (now - s_lastShown < std::chrono::microseconds(16667))
+	if (now < s_nextDue)
 		return true;
-	s_lastShown = now;
+	// Far behind -- the first redraw of a pause, or the window held up --
+	// starts counting again from now rather than catching up in a burst.
+	s_nextDue = (now - s_nextDue > kInterval * 2 ? now : s_nextDue) + kInterval;
 	session.Poll();
 	LatteRenderTarget_handleDualscreenPause();
 	const bool stillWanted = session.TakeStillWanted();

@@ -62,6 +62,8 @@ IMGUI_IMPL_API void     ImGui_ImplVulkan_SetMinImageCount(uint32_t min_image_cou
 IMGUI_IMPL_API ImTextureID    ImGui_ImplVulkan_AddTexture(VkSampler sampler, VkImageView image_view, VkImageLayout image_layout);
 IMGUI_IMPL_API ImTextureID ImGui_ImplVulkan_GenerateTexture(VkCommandBuffer commandBuffer, const std::vector<uint8>& data, const Vector2i& size);
 IMGUI_IMPL_API void ImGui_ImplVulkan_DeleteTexture(ImTextureID id);
+// DeleteTexture() and the texture's own record freed as well, for one made by GenerateTexture().
+IMGUI_IMPL_API void ImGui_ImplVulkan_DestroyTexture(ImTextureID id);
 
 
 //-------------------------------------------------------------------------

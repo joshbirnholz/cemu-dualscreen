@@ -2129,6 +2129,31 @@ void VulkanRenderer::DeleteTexture(ImTextureID id)
 	ImGui_ImplVulkan_DeleteTexture(id);
 }
 
+namespace
+{
+	// An ImGui texture handed to the destruction queue, so it goes once the
+	// command buffers that may still draw it have finished.
+	class ImGuiTextureDestructible : public VKRDestructibleObject
+	{
+	public:
+		explicit ImGuiTextureDestructible(ImTextureID id) : m_id(id) {}
+		~ImGuiTextureDestructible() override { ImGui_ImplVulkan_DestroyTexture(m_id); }
+	private:
+		ImTextureID m_id;
+	};
+}
+
+void VulkanRenderer::DeleteTextureLater(ImTextureID id)
+{
+	if (!id)
+		return;
+	// The last frame that could have drawn it is at most the one being
+	// recorded now: nothing draws it after this.
+	auto* destructible = new ImGuiTextureDestructible(id);
+	destructible->flagForCurrentCommandBuffer();
+	ReleaseDestructibleObject(destructible);
+}
+
 void VulkanRenderer::DeleteFontTextures()
 {
 	WaitDeviceIdle();
