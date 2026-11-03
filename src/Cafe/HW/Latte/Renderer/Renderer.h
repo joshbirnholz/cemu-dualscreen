@@ -108,6 +108,10 @@ public:
 	// The same from RGBA8 with straight alpha, for a picture that is only
 	// partly opaque -- Dualscreen's menu over the game.
 	virtual ImTextureID GenerateTextureRGBA(const std::vector<uint8>& rgba, const Vector2i& size) = 0;
+	// Deletes it once the GPU is done with whatever frames drew it, rather
+	// than waiting for the GPU to go idle as DeleteTexture() may: for a texture
+	// replaced every frame, as Dualscreen's menu is while it is up.
+	virtual void DeleteTextureLater(ImTextureID id) { DeleteTexture(id); }
 	virtual void DeleteFontTextures() = 0;
 
 	GfxVendor GetVendor() const { return m_vendor; }
