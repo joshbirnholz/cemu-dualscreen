@@ -1250,6 +1250,16 @@ void LatteRenderTarget_copyToBackbuffer(LatteTextureView* textureView, bool isPa
 
 			filter = LatteTextureView::MagFilter::kNearestNeighbor;
 		}
+		else if (scaling_filter == kFSRFilter)
+		{
+			// Only ever upscaling: downscale_filter is never FSR.
+			if (renderUpsideDown)
+				shader = RendererOutputShader::s_fsr_shader_ud;
+			else
+				shader = RendererOutputShader::s_fsr_shader;
+
+			filter = LatteTextureView::MagFilter::kLinear;
+		}
 	}
 	cemu_assert(shader);
 	g_renderer->DrawBackbufferQuad(textureView, shader, filter==LatteTextureView::MagFilter::kLinear, imageX, imageY, imageWidth, imageHeight, isPadView, clearBackground);

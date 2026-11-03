@@ -221,6 +221,13 @@ struct ExternalOption {
     int active = -1;
     bool restart_needed = false;
     int default_choice = -1;
+    // Whether it can be changed just now. One that means nothing with
+    // another's choice -- FSR's sharpness with another upscaler -- is still
+    // shown, greyed out, and passed over.
+    bool available = true;
+    // Its choices are steps along a scale, least first, for a slider rather
+    // than a list.
+    bool slider = false;
 };
 
 // How an amiibo scan went.

@@ -141,6 +141,11 @@ XMLConfigParser CemuConfig::Load(XMLConfigParser& parser)
 	gx2drawdone_sync = graphic.get("GX2DrawdoneSync", true);
 	upscale_filter = graphic.get("UpscaleFilter", kBicubicHermiteFilter);
 	downscale_filter = graphic.get("DownscaleFilter", kLinearFilter);
+	// FSR is no downscaler: one set to it some other way downscales as Cemu
+	// does by default.
+	if (downscale_filter.GetValue() == kFSRFilter)
+		downscale_filter = kLinearFilter;
+	fsr_sharpness = std::clamp<sint32>(graphic.get("FSRSharpness", kFSRSharpnessDefault), 0, kFSRSharpnessMax);
 	fullscreen_scaling = graphic.get("FullscreenScaling", kKeepAspectRatio);
 	async_compile = graphic.get("AsyncCompile", async_compile);
 	vk_accurate_barriers = graphic.get("vkAccurateBarriers", true); // this used to be "VulkanAccurateBarriers" but because we changed the default to true in 1.27.1 the option name had to be changed
@@ -374,6 +379,7 @@ XMLConfigParser CemuConfig::Save(XMLConfigParser& parser)
 	//graphic.set("PrecompiledShaders", precompiled_shaders.GetValue());
 	graphic.set("UpscaleFilter", upscale_filter);
 	graphic.set("DownscaleFilter", downscale_filter);
+	graphic.set("FSRSharpness", fsr_sharpness);
 	graphic.set("FullscreenScaling", fullscreen_scaling);
 	graphic.set("AsyncCompile", async_compile.GetValue());
 	graphic.set("vkAccurateBarriers", vk_accurate_barriers);

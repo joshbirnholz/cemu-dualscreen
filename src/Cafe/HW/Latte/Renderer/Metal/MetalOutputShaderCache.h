@@ -2,7 +2,7 @@
 
 #include "Cafe/HW/Latte/Renderer/Metal/MetalRenderer.h"
 
-constexpr uint8 METAL_SHADER_TYPE_COUNT = 6;
+constexpr uint8 METAL_SHADER_TYPE_COUNT = 8;
 constexpr uint8 METAL_OUTPUT_SHADER_CACHE_SIZE = 2 * METAL_SHADER_TYPE_COUNT;
 
 class MetalOutputShaderCache

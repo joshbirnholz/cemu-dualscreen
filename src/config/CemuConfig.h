@@ -94,7 +94,14 @@ enum UpscalingFilter
 	kBicubicFilter,
 	kBicubicHermiteFilter,
 	kNearestNeighborFilter,
+	// AMD FidelityFX Super Resolution 1: edge-adaptive upscaling (EASU),
+	// then contrast-adaptive sharpening (RCAS) by fsr_sharpness.
+	kFSRFilter,
 };
+
+// FSR 1's sharpening, in tenths: 0 for none, 10 for the most.
+constexpr sint32 kFSRSharpnessMax = 10;
+constexpr sint32 kFSRSharpnessDefault = 8;
 
 enum FullscreenScaling
 {
@@ -484,6 +491,7 @@ struct CemuConfig
 
 	ConfigValue<sint32> upscale_filter{kBicubicFilter};
 	ConfigValue<sint32> downscale_filter{kLinearFilter};
+	ConfigValue<sint32> fsr_sharpness{kFSRSharpnessDefault};
 	ConfigValue<sint32> fullscreen_scaling{kKeepAspectRatio};
 
 	// audio
