@@ -13,7 +13,9 @@
 #include "input/InputManager.h"
 #include "util/SystemInfo/SystemInfo.h"
 
+#include <algorithm>
 #include <cinttypes>
+#include <cmath>
 
 struct OverlayStats
 {
@@ -68,6 +70,37 @@ struct OverlayList
 const auto kPopupFlags = ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav;
 
 const float kBackgroundAlpha = 0.65f;
+
+// Dualscreen: the overlay and the notifications are measured in a 720-line
+// screen's pixels and scaled to the window, as Dualscreen's own menus and
+// corner notices are, so they read the same on a handheld panel and a 4K
+// television. Upstream Cemu draws them at a fixed 14 pixels (times the DPI
+// scale), which a television at 100% scaling shows as a sliver.
+static float s_overlay_unit = 1.0f;
+
+// Text the size of Dualscreen's own: its body text has an em of a 31.5th of
+// the screen's height (UiTheme::base_scale and kEmPerLineUnit in Dualscreen).
+// Rounded to an even pixel, as each size is a font of its own in ImGui's
+// atlas and a window being dragged larger would otherwise add one per pixel.
+static float LatteOverlay_fontSizeFor(float windowHeight, sint32 textScalePercent)
+{
+	const float size = windowHeight / 31.5f * (float)textScalePercent / 100.0f;
+	return std::max(10.0f, std::round(size / 2.0f) * 2.0f);
+}
+
+// Room around the text and between lines, in the same 720-line pixels.
+static void LatteOverlay_pushStyle()
+{
+	ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(std::round(s_overlay_unit * 12.0f), std::round(s_overlay_unit * 8.0f)));
+	ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(std::round(s_overlay_unit * 6.0f), std::round(s_overlay_unit * 2.0f)));
+	ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, std::round(s_overlay_unit * 6.0f));
+	ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
+}
+
+static void LatteOverlay_popStyle()
+{
+	ImGui::PopStyleVar(4);
+}
 void LatteOverlay_renderOverlay(ImVec2& position, ImVec2& pivot, sint32 direction, float fontSize, bool pad)
 {
 	auto& config = GetConfig();
@@ -75,6 +108,7 @@ void LatteOverlay_renderOverlay(ImVec2& position, ImVec2& pivot, sint32 directio
 	const auto font = ImGui_GetFont(fontSize);
 	ImGui::PushFont(font);
 
+	LatteOverlay_pushStyle();
 	const ImVec4 color = ImGui::ColorConvertU32ToFloat4(config.overlay.text_color);
 	ImGui::PushStyleColor(ImGuiCol_Text, color);
 	// stats overlay
@@ -117,12 +151,13 @@ void LatteOverlay_renderOverlay(ImVec2& position, ImVec2& pivot, sint32 directio
 				g_renderer->AppendOverlayDebugInfo();
 			}
 
-			position.y += (ImGui::GetWindowSize().y + 10.0f) * direction;
+			position.y += (ImGui::GetWindowSize().y + s_overlay_unit * 8.0f) * direction;
 		}
 		ImGui::End();
 	}
 
 	ImGui::PopStyleColor();
+	LatteOverlay_popStyle();
 	ImGui::PopFont();
 }
 
@@ -133,6 +168,7 @@ void LatteOverlay_RenderNotifications(ImVec2& position, ImVec2& pivot, sint32 di
 	const auto font = ImGui_GetFont(fontSize);
 	ImGui::PushFont(font);
 
+	LatteOverlay_pushStyle();
 	const ImVec4 color = ImGui::ColorConvertU32ToFloat4(config.notification.text_color);
 	ImGui::PushStyleColor(ImGuiCol_Text, color);
 
@@ -164,7 +200,7 @@ void LatteOverlay_RenderNotifications(ImVec2& position, ImVec2& pivot, sint32 di
 					}
 					ImGui::TextUnformatted(s_mii_name.c_str());
 
-					position.y += (ImGui::GetWindowSize().y + 10.0f) * direction;
+					position.y += (ImGui::GetWindowSize().y + s_overlay_unit * 8.0f) * direction;
 				}
 				ImGui::End();
 				
@@ -203,7 +239,7 @@ void LatteOverlay_RenderNotifications(ImVec2& position, ImVec2& pivot, sint32 di
 							ImGui::Text("Player %d: %s", it->first + 1, it->second.c_str());
 						}
 
-						position.y += (ImGui::GetWindowSize().y + 10.0f) * direction;
+						position.y += (ImGui::GetWindowSize().y + s_overlay_unit * 8.0f) * direction;
 					}
 					ImGui::End();
 				}
@@ -248,7 +284,7 @@ void LatteOverlay_RenderNotifications(ImVec2& position, ImVec2& pivot, sint32 di
 						++it;
 				}
 
-				position.y += (ImGui::GetWindowSize().y + 10.0f) * direction;
+				position.y += (ImGui::GetWindowSize().y + s_overlay_unit * 8.0f) * direction;
 			}
 			ImGui::End();
 		}
@@ -298,7 +334,7 @@ void LatteOverlay_RenderNotifications(ImVec2& position, ImVec2& pivot, sint32 di
 					ImGui::Text("Player %d", *it + 1);
 				}
 
-				position.y += (ImGui::GetWindowSize().y + 10.0f) * direction;
+				position.y += (ImGui::GetWindowSize().y + s_overlay_unit * 8.0f) * direction;
 			}
 			ImGui::End();
 		}
@@ -355,7 +391,7 @@ void LatteOverlay_RenderNotifications(ImVec2& position, ImVec2& pivot, sint32 di
 							ImGui::Text("Compiled %d new shader...", s_shader_count);
 					}
 
-					position.y += (ImGui::GetWindowSize().y + 10.0f) * direction;
+					position.y += (ImGui::GetWindowSize().y + s_overlay_unit * 8.0f) * direction;
 				}
 				ImGui::End();
 			}
@@ -427,7 +463,7 @@ void LatteOverlay_RenderNotifications(ImVec2& position, ImVec2& pivot, sint32 di
 							ImGui::Text("Compiled %d new pipeline...", s_pipeline_count);
 					}
 #endif
-					position.y += (ImGui::GetWindowSize().y + 10.0f) * direction;
+					position.y += (ImGui::GetWindowSize().y + s_overlay_unit * 8.0f) * direction;
 				}
 				ImGui::End();
 			}
@@ -467,45 +503,47 @@ void LatteOverlay_RenderNotifications(ImVec2& position, ImVec2& pivot, sint32 di
 					++it;
 			}
 
-			position.y += (ImGui::GetWindowSize().y + 10.0f) * direction;
+			position.y += (ImGui::GetWindowSize().y + s_overlay_unit * 8.0f) * direction;
 		}
 		ImGui::End();
 	}
 	ImGui::PopStyleColor();
+	LatteOverlay_popStyle();
 	ImGui::PopFont();
 }
 
 void LatteOverlay_translateScreenPosition(ScreenPosition pos, const Vector2f& window_size, ImVec2& position, ImVec2& pivot, sint32& direction)
 {
+	const float m = std::round(s_overlay_unit * 12.0f);
 	switch (pos)
 	{
 	case ScreenPosition::kTopLeft:
-		position = { 10, 10 };
+		position = { m, m };
 		pivot = { 0, 0 };
 		direction = 1;
 		break;
 	case ScreenPosition::kTopCenter:
-		position = { window_size.x / 2.0f, 10 };
+		position = { window_size.x / 2.0f, m };
 		pivot = { 0.5f, 0 };
 		direction = 1;
 		break;
 	case ScreenPosition::kTopRight:
-		position = { window_size.x - 10, 10 };
+		position = { window_size.x - m, m };
 		pivot = { 1, 0 };
 		direction = 1;
 		break;
 	case ScreenPosition::kBottomLeft:
-		position = { 10, window_size.y - 10 };
+		position = { m, window_size.y - m };
 		pivot = { 0, 1 };
 		direction = -1;
 		break;
 	case ScreenPosition::kBottomCenter:
-		position = { window_size.x / 2.0f, window_size.y - 10 };
+		position = { window_size.x / 2.0f, window_size.y - m };
 		pivot = { 0.5f, 1 };
 		direction = -1;
 		break;
 	case ScreenPosition::kBottomRight:
-		position = { window_size.x - 10, window_size.y - 10 };
+		position = { window_size.x - m, window_size.y - m };
 		pivot = { 1, 1 };
 		direction = -1;
 		break;
@@ -531,15 +569,15 @@ void LatteOverlay_render(bool pad_view)
 
 	const Vector2f window_size{ (float)w,(float)h };
 
-	float fontDPIScale = !pad_view ? WindowSystem::GetWindowDPIScale() : WindowSystem::GetPadDPIScale();
+	s_overlay_unit = window_size.y / 720.0f;
 
-	float overlayFontSize = 14.0f * (float)config.overlay.text_scale / 100.0f * fontDPIScale;
+	float overlayFontSize = LatteOverlay_fontSizeFor(window_size.y, config.overlay.text_scale);
 
 	// test if fonts are already precached
 	if (!ImGui_GetFont(overlayFontSize))
 		return;
 
-	float notificationsFontSize = 14.0f * (float)config.notification.text_scale / 100.0f * fontDPIScale;
+	float notificationsFontSize = LatteOverlay_fontSizeFor(window_size.y, config.notification.text_scale);
 	
 	if (!ImGui_GetFont(notificationsFontSize))
 		return;
