@@ -381,6 +381,36 @@ namespace
 		}
 	}
 
+	// The GamePad unplugged for Dualscreen, to play with a Pro Controller
+	// alone: the controller that was in its slot, to plug back in as it was.
+	// Never saved over the controller profiles.
+	EmulatedControllerPtr s_unpluggedGamePad;
+
+	int GamePadState() { return s_unpluggedGamePad ? 1 : 0; }
+
+	void SetGamePadState(int choice)
+	{
+		auto& input = InputManager::instance();
+		if (choice == 1 && !s_unpluggedGamePad)
+		{
+			for (size_t slot = 0; slot < InputManager::kMaxController; ++slot)
+			{
+				const auto emulated = input.get_controller(slot);
+				if (!emulated || emulated->type() != EmulatedController::Type::VPAD)
+					continue;
+				s_unpluggedGamePad = input.delete_controller(slot);
+				cemuLog_log(LogType::Force, "Dualscreen: the GamePad is unplugged");
+				return;
+			}
+		}
+		else if (choice == 0 && s_unpluggedGamePad)
+		{
+			input.set_controller(s_unpluggedGamePad);
+			s_unpluggedGamePad.reset();
+			cemuLog_log(LogType::Force, "Dualscreen: the GamePad is plugged back in");
+		}
+	}
+
 	template<int Player> int GetPlayerType() { return PlayerType(Player); }
 	template<int Player> void SetPlayerTypeOf(int choice) { SetPlayerType(Player, choice); }
 	template<int Player> int PlayerTypeDefaultOf() { return PlayerTypeDefault(Player); }
@@ -466,6 +496,9 @@ namespace
 			 -1, true},
 			// The game's other controllers, each one's type as this game wants
 			// it, kept for the game by Dualscreen.
+			// Whether the game has its GamePad: Dualscreen unplugs it to
+			// play with a Pro Controller alone, and keeps that per game.
+			{"gamepad_connected", "GamePad", {"Connected", "Disconnected"}, &GamePadState, &SetGamePadState},
 			{"player1_type", "Player 1 Controller", kPlayerTypeChoices, &GetPlayerType<0>, &SetPlayerTypeOf<0>,
 			 -1, false, &PlayerTypeDefaultOf<0>},
 			{"player2_type", "Player 2 Controller", kPlayerTypeChoices, &GetPlayerType<1>, &SetPlayerTypeOf<1>,
@@ -581,7 +614,12 @@ namespace
 		std::array<bool, ds::kExternalPlayers> fed{};
 		bool attached = false;
 		if (session.TakePlayersFed(fed, attached))
+		{
 			MatchPlayersFed(fed, attached);
+			// With no shell left, the GamePad goes back too.
+			if (!attached)
+				SetGamePadState(0);
+		}
 	}
 }
 
