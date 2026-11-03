@@ -99,9 +99,9 @@ enum UpscalingFilter
 	kFSRFilter,
 };
 
-// FSR 1's sharpening, in tenths: 0 for none, 10 for the most.
-constexpr sint32 kFSRSharpnessMax = 10;
-constexpr sint32 kFSRSharpnessDefault = 8;
+// FSR 1's sharpening, in percent: 0 for none, 100 for the most.
+constexpr sint32 kFSRSharpnessMax = 100;
+constexpr sint32 kFSRSharpnessDefault = 30;
 
 enum FullscreenScaling
 {

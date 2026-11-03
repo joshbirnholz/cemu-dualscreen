@@ -583,12 +583,12 @@ RendererOutputShader* RendererOutputShader::s_fsr_shader_ud;
 float RendererOutputShader::FSRSharpness()
 {
 	// RCAS's sharpness is in stops down from the most: 0 the sharpest, each
-	// more halving it. Ten steps of 0.2 stops each from the most, as AMD's
-	// own samples offer, and none at all at 0.
+	// more halving it. 100% the most, down to 2 stops at 1% -- the range
+	// AMD's own samples offer -- and none at all at 0.
 	const sint32 sharpness = std::clamp<sint32>(GetConfig().fsr_sharpness.GetValue(), 0, kFSRSharpnessMax);
 	if (sharpness == 0)
 		return 0.0f;
-	return std::exp2(-0.2f * (float)(kFSRSharpnessMax - sharpness));
+	return std::exp2(-2.0f * (float)(kFSRSharpnessMax - sharpness) / (float)kFSRSharpnessMax);
 }
 
 std::string RendererOutputShader::GetOpenGlVertexSource(bool render_upside_down)

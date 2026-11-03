@@ -148,12 +148,12 @@ namespace
 		bool slider = false;
 	};
 
-	// FSR's sharpness, in tenths, as the steps of its slider.
+	// FSR's sharpness, in percent, as the steps of its slider.
 	std::vector<std::string> FSRSharpnessChoices()
 	{
 		std::vector<std::string> choices;
-		for (int tenths = 0; tenths <= kFSRSharpnessMax; ++tenths)
-			choices.push_back(std::to_string(tenths * 10) + "%");
+		for (int percent = 0; percent <= kFSRSharpnessMax; ++percent)
+			choices.push_back(std::to_string(percent) + "%");
 		return choices;
 	}
 
@@ -444,11 +444,12 @@ namespace
 	{
 		static const std::vector<Option> s_options = {
 			// The order of Cemu's UpscalingFilter.
-			{"upscale_filter", "Upscaling", {"Bilinear", "Bicubic", "Hermite", "Nearest neighbor", "AMD FSR 1"},
+			{"upscale_filter", "Upscaling", {"Bilinear", "Bicubic", "Hermite", "Nearest neighbor", "AMD FSR"},
 			 []() { return (int)GetConfig().upscale_filter.GetValue(); },
 			 [](int choice) { GetConfig().upscale_filter = choice; }, kBicubicFilter},
-			// Right under it, for FSR alone.
-			{"fsr_sharpness", "FSR Sharpness", FSRSharpnessChoices(),
+			// Right under it, for FSR alone. Not "fsr_sharpness", which a
+			// nightly sent in tenths and Dualscreen may have kept per game.
+			{"fsr_sharpness_percent", "FSR Sharpness", FSRSharpnessChoices(),
 			 []() { return (int)GetConfig().fsr_sharpness.GetValue(); },
 			 [](int choice) { GetConfig().fsr_sharpness = choice; }, kFSRSharpnessDefault, false, nullptr,
 			 []() { return GetConfig().upscale_filter.GetValue() == kFSRFilter; }, true},
