@@ -1,5 +1,6 @@
 #include "input/InputManager.h"
 #include "config/ActiveSettings.h"
+#include "config/LaunchSettings.h"
 #include "input/ControllerFactory.h"
 #include <boost/property_tree/ini_parser.hpp>
 #include <pugixml.hpp>
@@ -59,8 +60,34 @@ InputManager::~InputManager()
 	// destructors will not invoked forever, so we manually release resources in Shutdown().
 }
 
+// Run for Dualscreen, which holds every controller, says what each player is,
+// and keeps that per game: Cemu's controller profiles are another Cemu's,
+// shared with it, so they are neither read nor written. The GamePad is the
+// DualScreen controller standing in for it, mapped as a fresh one is; the
+// players are plugged in as Dualscreen says.
+static bool ControlledByDualscreen()
+{
+	return !LaunchSettings::GetDualscreenSocket().empty();
+}
+
 void InputManager::load() noexcept
 {
+	if (ControlledByDualscreen())
+	{
+		try
+		{
+			const auto controller = ControllerFactory::CreateController(InputAPI::DualScreen, "0", "");
+			auto gamepad = ControllerFactory::CreateEmulatedController(0, EmulatedController::Type::VPAD);
+			gamepad->add_controller(controller);
+			gamepad->set_default_mapping(controller);
+			set_controller(gamepad);
+		}
+		catch (const std::exception& ex)
+		{
+			cemuLog_log(LogType::Force, "Dualscreen: can't set up the GamePad: {}", ex.what());
+		}
+		return;
+	}
 	for (size_t i = 0; i < kMaxController; ++i)
 	{
 		try
@@ -448,6 +475,9 @@ bool InputManager::save(size_t player_index, std::string_view filename)
 	// dont overwrite files if set by gameprofile
 	if (m_is_gameprofile_set[player_index])
 		return true;
+	// Nor another Cemu's, from one Dualscreen is running.
+	if (ControlledByDualscreen())
+		return true;
 
 	auto emulated_controller = get_controller(player_index);
 	if (!emulated_controller)
@@ -796,6 +826,9 @@ ControllerProviderPtr InputManager::get_api_provider(InputAPI::Type api, const C
 
 void InputManager::apply_game_profile()
 {
+	// A game profile's controllers are Cemu's own, not Dualscreen's.
+	if (ControlledByDualscreen())
+		return;
 	const auto& profiles = g_current_game_profile->GetControllerProfile();
 	for (int i = 0; i < kMaxController; ++i)
 	{

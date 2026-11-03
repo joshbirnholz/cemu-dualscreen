@@ -2445,6 +2445,8 @@ void MainWindow::RecreateMenu()
 	#endif
 	optionsMenu->Append(MAINFRAME_MENU_ID_OPTIONS_GENERAL2, _("&General settings"));
 	optionsMenu->Append(MAINFRAME_MENU_ID_OPTIONS_INPUT, _("&Input settings"));
+	// Run for Dualscreen, its controller pages are the only ones.
+	optionsMenu->Enable(MAINFRAME_MENU_ID_OPTIONS_INPUT, LaunchSettings::GetDualscreenSocket().empty());
 	optionsMenu->Append(MAINFRAME_MENU_ID_OPTIONS_HOTKEY, _("&Hotkey settings"));
 
 	optionsMenu->AppendSeparator();
