@@ -493,8 +493,11 @@ void MetalRenderer::DrawBackbufferQuad(LatteTextureView* texView, RendererOutput
     else if (shader == RendererOutputShader::s_copy_shader_ud) shaderIndex = 3;
     else if (shader == RendererOutputShader::s_bicubic_shader_ud) shaderIndex = 4;
     else if (shader == RendererOutputShader::s_hermit_shader_ud) shaderIndex = 5;
+    else if (shader == RendererOutputShader::s_fsr_shader) shaderIndex = 6;
+    else if (shader == RendererOutputShader::s_fsr_shader_ud) shaderIndex = 7;
 
-    uint8 shaderType = shaderIndex % 3;
+    // 0 copy, 1 bicubic, 2 hermite, 3 FSR.
+    uint8 shaderType = shaderIndex >= 6 ? 3 : shaderIndex % 3;
 
     // Get the render pipeline state
     auto renderPipelineState = m_outputShaderCache->GetPipeline(shader, shaderIndex, m_state.m_usesSRGB);
@@ -511,6 +514,13 @@ void MetalRenderer::DrawBackbufferQuad(LatteTextureView* texView, RendererOutput
     case 2:
         renderCommandEncoder->setFragmentBytes(outputSize, sizeof(outputSize), 0);
         break;
+    case 3:
+    {
+        // The output's size, and FSR's sharpening.
+        float fsrParams[4] = {(float)imageWidth, (float)imageHeight, RendererOutputShader::FSRSharpness(), 0.0f};
+        renderCommandEncoder->setFragmentBytes(fsrParams, sizeof(fsrParams), 0);
+        break;
+    }
     default:
         break;
     }

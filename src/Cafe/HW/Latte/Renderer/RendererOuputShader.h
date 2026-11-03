@@ -16,6 +16,8 @@ public:
 		uint32 applySRGBEncoding;
 		float targetGamma;
 		float displayGamma;
+		// FSR 1's RCAS sharpening, 0 for none -- see FSRSharpness().
+		float fsrSharpness;
 	};
 	enum Shader
 	{
@@ -50,6 +52,13 @@ public:
 	static RendererOutputShader* s_hermit_shader;
 	static RendererOutputShader* s_hermit_shader_ud;
 
+	// AMD FSR 1, upscaling only -- see kFSRFilter.
+	static RendererOutputShader* s_fsr_shader;
+	static RendererOutputShader* s_fsr_shader_ud;
+
+	// The sharpening FSR's shaders are given, from GetConfig().fsr_sharpness.
+	static float FSRSharpness();
+
 	static std::string GetOpenGlVertexSource(bool render_upside_down);
 	static std::string GetVulkanVertexSource(bool render_upside_down);
 	static std::string GetMetalVertexSource(bool render_upside_down);
@@ -72,4 +81,7 @@ private:
 	static const std::string s_copy_shader_source_mtl;
 	static const std::string s_bicubic_shader_source_mtl;
 	static const std::string s_hermite_shader_source_mtl;
+
+	static const std::string s_fsr_shader_source;
+	static const std::string s_fsr_shader_source_mtl;
 };

@@ -141,7 +141,21 @@ namespace
 		bool restartNeeded = false;
 		// A default worked out rather than fixed -- see PlayerTypeDefault().
 		int (*defaultOf)() = nullptr;
+		// Whether it means anything just now, for one that only does with
+		// another's choice; always, with none.
+		bool (*available)() = nullptr;
+		// Its choices are steps along a scale, least first.
+		bool slider = false;
 	};
+
+	// FSR's sharpness, in tenths, as the steps of its slider.
+	std::vector<std::string> FSRSharpnessChoices()
+	{
+		std::vector<std::string> choices;
+		for (int tenths = 0; tenths <= kFSRSharpnessMax; ++tenths)
+			choices.push_back(std::to_string(tenths * 10) + "%");
+		return choices;
+	}
 
 	// What each of Dualscreen's players is to the game, in the order of
 	// kPlayerTypeChoices: a Pro Controller, a Classic Controller Pro, or a Wii
@@ -430,9 +444,14 @@ namespace
 	{
 		static const std::vector<Option> s_options = {
 			// The order of Cemu's UpscalingFilter.
-			{"upscale_filter", "Upscaling", {"Bilinear", "Bicubic", "Hermite", "Nearest neighbor"},
+			{"upscale_filter", "Upscaling", {"Bilinear", "Bicubic", "Hermite", "Nearest neighbor", "AMD FSR 1"},
 			 []() { return (int)GetConfig().upscale_filter.GetValue(); },
 			 [](int choice) { GetConfig().upscale_filter = choice; }, kBicubicFilter},
+			// Right under it, for FSR alone.
+			{"fsr_sharpness", "FSR Sharpness", FSRSharpnessChoices(),
+			 []() { return (int)GetConfig().fsr_sharpness.GetValue(); },
+			 [](int choice) { GetConfig().fsr_sharpness = choice; }, kFSRSharpnessDefault, false, nullptr,
+			 []() { return GetConfig().upscale_filter.GetValue() == kFSRFilter; }, true},
 			// The order of Cemu's FullscreenScaling.
 			{"fullscreen_scaling", "Aspect Ratio", {"Original", "Stretched"},
 			 []() { return (int)GetConfig().fullscreen_scaling.GetValue(); },
@@ -527,6 +546,8 @@ namespace
 			entry.active = at >= 0 && at < (int)option.choices.size() ? at : -1;
 			entry.default_choice = option.defaultOf ? option.defaultOf() : option.defaultChoice;
 			entry.restart_needed = option.restartNeeded;
+			entry.available = !option.available || option.available();
+			entry.slider = option.slider;
 			list.push_back(std::move(entry));
 		}
 		return list;

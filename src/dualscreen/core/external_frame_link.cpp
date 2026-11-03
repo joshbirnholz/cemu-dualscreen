@@ -460,6 +460,12 @@ void put_options(std::vector<uint8_t>& out, const std::vector<ExternalOption>& o
                                  static_cast<std::size_t>(option.default_choice) < option.choices.size();
         put_u16(out, has_default ? static_cast<uint16_t>(option.default_choice) : 0xFFFFu);
     }
+    // Then each one's flags, after those for the same reason: 1 for one not
+    // available just now, 2 for a slider.
+    for (std::size_t index = 0; index < count; ++index) {
+        const ExternalOption& option = options[index];
+        out.push_back(static_cast<uint8_t>((option.available ? 0u : 1u) | (option.slider ? 2u : 0u)));
+    }
 }
 
 bool read_options(const std::vector<uint8_t>& body, std::vector<ExternalOption>& out) {
@@ -485,6 +491,13 @@ bool read_options(const std::vector<uint8_t>& body, std::vector<ExternalOption>&
             const uint16_t fallback = reader.u16();
             option.default_choice =
                 fallback < option.choices.size() ? static_cast<int>(fallback) : -1;
+        }
+    }
+    if (body.size() - reader.at >= options.size()) {
+        for (ExternalOption& option : options) {
+            const uint8_t flags = reader.u8();
+            option.available = (flags & 1u) == 0u;
+            option.slider = (flags & 2u) != 0u;
         }
     }
     out = std::move(options);

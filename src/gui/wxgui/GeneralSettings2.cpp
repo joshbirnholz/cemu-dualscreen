@@ -483,15 +483,38 @@ wxPanel* GeneralSettings2::AddGraphicsPage(wxNotebook* notebook)
 	}
 
 	{
-		wxString choices[] = { _("Bilinear"), _("Bicubic"), _("Hermite"), _("Nearest Neighbor") };
+		// The order of UpscalingFilter. FSR upscales only, so downscaling
+		// offers the rest.
+		wxString choices[] = { _("Bilinear"), _("Bicubic"), _("Hermite"), _("Nearest Neighbor"), _("AMD FSR 1") };
 		m_upscale_filter = new wxRadioBox(graphics_panel, wxID_ANY, _("Upscale filter"), wxDefaultPosition, wxDefaultSize, std::size(choices), choices, 5, wxRA_SPECIFY_COLS);
 		m_upscale_filter->SetToolTip(_("Upscaling filters are used when the game resolution is smaller than the window size"));
-		m_upscale_filter->Bind(wxEVT_RADIOBOX, [](wxCommandEvent& event) {
+		m_upscale_filter->Bind(wxEVT_RADIOBOX, [this](wxCommandEvent& event) {
 			GetConfig().upscale_filter = event.GetSelection();
+			m_fsr_sharpness->Enable(event.GetSelection() == kFSRFilter);
 		});
 		graphics_panel_sizer->Add(m_upscale_filter, 0, wxALL | wxEXPAND, 5);
 
-		m_downscale_filter = new wxRadioBox(graphics_panel, wxID_ANY, _("Downscale filter"), wxDefaultPosition, wxDefaultSize, std::size(choices), choices, 5, wxRA_SPECIFY_COLS);
+		// FSR's sharpening, which only means anything with FSR chosen.
+		auto fsr_row = new wxBoxSizer(wxHORIZONTAL);
+		fsr_row->Add(new wxStaticText(graphics_panel, wxID_ANY, _("FSR sharpness")), 0, wxALIGN_CENTER_VERTICAL | wxALL, 5);
+		m_fsr_sharpness = new wxSlider(graphics_panel, wxID_ANY, kFSRSharpnessDefault * 10, 0, kFSRSharpnessMax * 10, wxDefaultPosition, wxSize(230, -1), wxSL_HORIZONTAL);
+		m_fsr_sharpness->SetLineSize(10);
+		m_fsr_sharpness->SetPageSize(10);
+		m_fsr_sharpness->SetToolTip(_("How much FSR sharpens the upscaled picture"));
+		fsr_row->Add(m_fsr_sharpness, 0, wxEXPAND | wxALL, 5);
+		m_fsr_sharpness_text = new wxStaticText(graphics_panel, wxID_ANY, "80%");
+		fsr_row->Add(m_fsr_sharpness_text, 0, wxALIGN_CENTER_VERTICAL | wxALL, 5);
+		m_fsr_sharpness->Bind(wxEVT_SLIDER, [this](wxCommandEvent& event) {
+			// In tenths: a step of the slider is one.
+			const int tenths = std::clamp((event.GetInt() + 5) / 10, 0, (int)kFSRSharpnessMax);
+			m_fsr_sharpness->SetValue(tenths * 10);
+			m_fsr_sharpness_text->SetLabel(wxString::Format("%d%%", tenths * 10));
+			GetConfig().fsr_sharpness = tenths;
+		});
+		graphics_panel_sizer->Add(fsr_row, 0, wxALL, 0);
+
+		wxString downscale_choices[] = { _("Bilinear"), _("Bicubic"), _("Hermite"), _("Nearest Neighbor") };
+		m_downscale_filter = new wxRadioBox(graphics_panel, wxID_ANY, _("Downscale filter"), wxDefaultPosition, wxDefaultSize, std::size(downscale_choices), downscale_choices, 5, wxRA_SPECIFY_COLS);
 		m_downscale_filter->SetToolTip(_("Downscaling filters are used when the game resolution is bigger than the window size"));
 		m_downscale_filter->Bind(wxEVT_RADIOBOX, [](wxCommandEvent& event) {
 			GetConfig().downscale_filter = event.GetSelection();
@@ -1922,6 +1945,9 @@ void GeneralSettings2::ApplyConfig()
 	m_force_mesh_shaders->SetValue(config.force_mesh_shaders);
 #endif
 	m_upscale_filter->SetSelection(config.upscale_filter);
+	m_fsr_sharpness->SetValue(config.fsr_sharpness * 10);
+	m_fsr_sharpness_text->SetLabel(wxString::Format("%d%%", config.fsr_sharpness * 10));
+	m_fsr_sharpness->Enable(config.upscale_filter == kFSRFilter);
 	m_downscale_filter->SetSelection(config.downscale_filter);
 	m_fullscreen_scaling->SetSelection(config.fullscreen_scaling);
 
