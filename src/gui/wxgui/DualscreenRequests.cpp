@@ -228,6 +228,12 @@ namespace
 	// already that keeps its own mapping; a new one gets the default mapping
 	// for whatever feeds it, as a fresh Cemu does.
 	void PlugInPlayer(int player, size_t slot, int choice);
+	bool FedOnlyByPlayer(size_t slot, int player);
+
+	// What the shell last said it is feeding -- see MatchPlayersFed() -- so a
+	// player made a type afterwards is only plugged in if someone is holding it.
+	std::array<bool, ds::kExternalPlayers> s_fed{};
+	bool s_fedKnown = false;
 
 	void SetPlayerType(int player, int choice)
 	{
@@ -237,7 +243,25 @@ namespace
 			s_unplugged[player]->type = choice;
 			return;
 		}
-		PlugInPlayer(player, SlotForPlayer(player), choice);
+		const size_t slot = SlotForPlayer(player);
+		// Nothing feeding it: kept as this type for when something does, but
+		// not plugged in. Otherwise a game's four players made Wii Remotes
+		// with one controller held are four Wii Remotes the game sees as
+		// connected, since the shell's word that three of them are empty came
+		// before they existed and is not said again. A slot with a pad of this
+		// machine's in it is that pad's to say, so it is plugged in as asked.
+		const bool emptySlot = !InputManager::instance().get_controller(slot);
+		if (choice != kPlayerTypeNone && s_fedKnown && !s_fed[player] &&
+			(emptySlot || FedOnlyByPlayer(slot, player)))
+		{
+			s_unplugged[player] = Unplugged{slot, choice};
+			if (!emptySlot)
+				InputManager::instance().delete_controller(slot);
+			cemuLog_log(LogType::Force, "Dualscreen: nothing is feeding Player {}, so it stays unplugged as a {}",
+						player + 1, kPlayerTypeChoices[choice]);
+			return;
+		}
+		PlugInPlayer(player, slot, choice);
 	}
 
 	void PlugInPlayer(int player, size_t slot, int choice)
@@ -325,6 +349,8 @@ namespace
 	void MatchPlayersFed(const std::array<bool, ds::kExternalPlayers>& fed, bool attached)
 	{
 		auto& input = InputManager::instance();
+		s_fed = fed;
+		s_fedKnown = attached;
 		for (int player = 0; player < ds::kExternalPlayers; ++player)
 		{
 			const bool wanted = !attached || fed[player];
