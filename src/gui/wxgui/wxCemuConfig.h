@@ -120,17 +120,20 @@ struct wxCemuConfig
 	// hotkeys
 	struct
 	{
+		// The same defaults Load() gives a settings.xml without them, here
+		// too: a first start saves its settings before any was loaded, and
+		// wrote every hotkey as none -- F11 then never left fullscreen.
 		sHotkeyCfg modifiers;
-		sHotkeyCfg toggleFullscreen;
-		sHotkeyCfg toggleFullscreenAlt;
-		sHotkeyCfg exitFullscreen;
-		sHotkeyCfg takeScreenshot;
+		sHotkeyCfg toggleFullscreen{uKeyboardHotkey{WXK_F11}};
+		sHotkeyCfg toggleFullscreenAlt{uKeyboardHotkey{WXK_CONTROL_M, true}}; // ALT+ENTER
+		sHotkeyCfg exitFullscreen{uKeyboardHotkey{WXK_ESCAPE}};
+		sHotkeyCfg takeScreenshot{uKeyboardHotkey{WXK_F12}};
 		sHotkeyCfg toggleFastForward;
 		sHotkeyCfg exitApplication;
 #ifdef CEMU_DEBUG_ASSERT
-		sHotkeyCfg endEmulation;
+		sHotkeyCfg endEmulation{uKeyboardHotkey{WXK_F5}};
 #endif
-	} hotkeys{};
+	} hotkeys;
 
 	void AddRecentlyLaunchedFile(std::string_view file);
 	void AddRecentNfcFile(std::string_view file);
