@@ -315,9 +315,15 @@ bool CemuApp::OnInit()
 
 	if (isFirstStart)
 	{
-		// show the getting started dialog
-		GettingStartedDialog dia(nullptr);
-		dia.ShowModal();
+		// show the getting started dialog -- but not under Dualscreen, which
+		// starts the game itself and keeps Cemu's graphic packs up to date in
+		// its own settings, so neither game paths nor a download are asked
+		// for. Someone playing in Game Mode has no mouse to answer it with.
+		if (LaunchSettings::GetDualscreenSocket().empty())
+		{
+			GettingStartedDialog dia(nullptr);
+			dia.ShowModal();
+		}
 		// make sure config is created. Gfx pack UI and input UI may create it earlier already, but we still want to update it
 		GetConfigHandle().Save();
 		// create mlc, on failure the user can quit here. So do this after the Getting Started dialog

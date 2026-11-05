@@ -119,6 +119,20 @@ void wxCemuConfig::Load(XMLConfigParser& parser)
 #ifdef CEMU_DEBUG_ASSERT
 	hotkeys.endEmulation = xml_hotkeys.get("EndEmulation", sHotkeyCfg{uKeyboardHotkey{WXK_F5}});
 #endif
+	// A settings.xml from a first start before the defaults above were also
+	// the struct's own has every hotkey as none, including all three ways out
+	// of fullscreen -- not a choice anybody made. Those get theirs back.
+	const auto none = [](const sHotkeyCfg& c) {
+		return c.keyboard.raw == sHotkeyCfg::keyboardNone && c.controller == sHotkeyCfg::controllerNone;
+	};
+	if (none(hotkeys.toggleFullscreen) && none(hotkeys.toggleFullscreenAlt) && none(hotkeys.exitFullscreen) &&
+		none(hotkeys.takeScreenshot))
+	{
+		hotkeys.exitFullscreen = sHotkeyCfg{uKeyboardHotkey{WXK_ESCAPE}};
+		hotkeys.toggleFullscreen = sHotkeyCfg{uKeyboardHotkey{WXK_F11}};
+		hotkeys.toggleFullscreenAlt = sHotkeyCfg{uKeyboardHotkey{WXK_CONTROL_M, true}}; // ALT+ENTER
+		hotkeys.takeScreenshot = sHotkeyCfg{uKeyboardHotkey{WXK_F12}};
+	}
 }
 
 void wxCemuConfig::Save(XMLConfigParser& config)

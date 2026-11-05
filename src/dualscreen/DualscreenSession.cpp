@@ -54,7 +54,7 @@ void DualscreenSession::Start(int tvWidth, int tvHeight, int padWidth, int padHe
 	// -- see ShowGameDialog().
 	info.features = ds::kExternalFeatureOverlay | ds::kExternalFeaturePause |
 					ds::kExternalFeatureOverlayPointer | ds::kExternalFeatureGameDialogs |
-					ds::kExternalFeatureOverlayAnimation;
+					ds::kExternalFeatureOverlayAnimation | ds::kExternalFeatureLargeOverlay;
 	{
 		std::scoped_lock requests(m_requestsMutex);
 		if (m_requestHandler)
