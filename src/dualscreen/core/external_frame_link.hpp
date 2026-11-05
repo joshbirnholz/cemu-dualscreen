@@ -104,6 +104,11 @@ inline constexpr uint32_t kExternalFeatureOverlayAnimation = 128u;
 // ExternalControl::AmiiboReading -- so one that would not scan is said so
 // before the menu closes, not after the game has gone on without it.
 inline constexpr uint32_t kExternalFeatureAmiiboReading = 256u;
+// The producer reads the overlay from the large slots, up to
+// ExternalOverlayArea::kLargeMaxWidth x kLargeMaxHeight, rather than the
+// original ones -- a menu at a 1440p or 4K display's own size, not scaled up
+// from 1080p. Only said when the consumer's memory has them.
+inline constexpr uint32_t kExternalFeatureLargeOverlay = 512u;
 
 // How the menu comes and goes, for the end that animates it: opened from the
 // game, the backdrop fades in quickly and the menu just after, growing the
@@ -670,6 +675,11 @@ struct ExternalOverlayArea {
     // this, and scaled to the producer's window.
     static constexpr int kMaxWidth = 1920;
     static constexpr int kMaxHeight = 1080;
+    // The large slots, after the original ones: see
+    // kExternalFeatureLargeOverlay. A producer or consumer from before them
+    // never looks past end().
+    static constexpr int kLargeMaxWidth = 3840;
+    static constexpr int kLargeMaxHeight = 2160;
 
     ExternalSlotState slots[kSlots];
 
@@ -684,6 +694,19 @@ struct ExternalOverlayArea {
     }
     // The whole of the memory once the overlay is in it.
     static std::size_t end() { return pixels_offset() + slot_bytes() * kSlots; }
+
+    static std::size_t large_slot_bytes() { return static_cast<std::size_t>(kLargeMaxWidth) * kLargeMaxHeight * 4; }
+    static std::size_t large_slot_offset(int slot) {
+        return end() + large_slot_bytes() * static_cast<std::size_t>(slot);
+    }
+    static std::size_t large_end() { return end() + large_slot_bytes() * kSlots; }
+
+    // Whichever slots are in use.
+    static int max_width(bool large) { return large ? kLargeMaxWidth : kMaxWidth; }
+    static int max_height(bool large) { return large ? kLargeMaxHeight : kMaxHeight; }
+    static std::size_t slot_offset(int slot, bool large) {
+        return large ? large_slot_offset(slot) : slot_offset(slot);
+    }
 };
 
 // The consumer: this app, waiting for something to play.
@@ -793,6 +816,11 @@ public:
     // Whether the producer draws what publish_overlay() hands it -- see
     // kExternalFeatureOverlay.
     bool overlay_supported() const { return connected() && (info_.features & kExternalFeatureOverlay) != 0u; }
+    // The largest overlay picture this producer takes: see
+    // kExternalFeatureLargeOverlay.
+    bool large_overlay() const { return overlay_supported() && (info_.features & kExternalFeatureLargeOverlay) != 0u; }
+    int overlay_max_width() const { return ExternalOverlayArea::max_width(large_overlay()); }
+    int overlay_max_height() const { return ExternalOverlayArea::max_height(large_overlay()); }
     // Hands the producer a picture to draw over its own window: `rgba`, RGBA8
     // with straight alpha, `width` x `height` (no bigger than
     // ExternalOverlayArea's maximum). Shown until hide_overlay() or the next
@@ -1079,6 +1107,7 @@ public:
     // Whether the consumer wants an overlay drawn, as of the last poll(), and
     // whether this end can at all: the consumer's memory has room for one.
     bool overlay_available() const { return memory_bytes_ >= ExternalOverlayArea::end(); }
+    bool large_overlay_available() const { return memory_bytes_ >= ExternalOverlayArea::large_end(); }
     bool overlay_visible() const { return overlay_visible_; }
     // Whether that overlay is a menu, which the keys, clicks and pads go to
     // while it is up, rather than a notice they pass under.
@@ -1148,6 +1177,9 @@ private:
     int memory_fd_ = -1;
     void* memory_ = nullptr;
     void* memory_mapping_ = nullptr;  // Windows: see ExternalFrameLink's
+    // Whether the consumer was told kExternalFeatureLargeOverlay, so draws
+    // the overlay into the large slots.
+    bool large_overlay_ = false;
     // How much of it is mapped: ExternalSharedHeader's, and the overlay's
     // after it when the consumer made room for one.
     std::size_t memory_bytes_ = 0;

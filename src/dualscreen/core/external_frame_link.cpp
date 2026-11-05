@@ -894,7 +894,7 @@ bool ExternalFrameLink::listen(const std::string& socket_path, std::string* erro
 
     // Room for the overlay after the frames: see ExternalOverlayArea. Never
     // touched by a producer that cannot draw one, so it costs nothing there.
-    const std::size_t bytes = ExternalOverlayArea::end();
+    const std::size_t bytes = ExternalOverlayArea::large_end();
 #if defined(_WIN32)
     memory_name_ = new_memory_name();
     const unsigned long long size = bytes;
@@ -976,7 +976,7 @@ void ExternalFrameLink::close() {
     memory_name_.clear();
 #else
     if (memory_ != nullptr) {
-        ::munmap(memory_, ExternalOverlayArea::end());
+        ::munmap(memory_, ExternalOverlayArea::large_end());
         memory_ = nullptr;
     }
     if (memory_fd_ >= 0) {
@@ -1073,7 +1073,7 @@ bool ExternalFrameLink::accept_peer(std::string* error) {
     // producer never has to handle a frame announcement for memory it cannot
     // see yet.
 #if defined(_WIN32)
-    const bool handed_over = send_memory_name(peer_fd_, memory_name_, ExternalOverlayArea::end());
+    const bool handed_over = send_memory_name(peer_fd_, memory_name_, ExternalOverlayArea::large_end());
 #else
     const bool handed_over = send_fd(peer_fd_, memory_fd_);
 #endif
@@ -1456,8 +1456,7 @@ void ExternalFrameLink::request_reset() { send_control(ExternalControl::Reset, {
 bool ExternalFrameLink::publish_overlay(const uint8_t* rgba, int width, int height,
                                         bool takes_input) {
     if (!overlay_supported() || memory_ == nullptr || rgba == nullptr || width <= 0 ||
-        height <= 0 || width > ExternalOverlayArea::kMaxWidth ||
-        height > ExternalOverlayArea::kMaxHeight) {
+        height <= 0 || width > overlay_max_width() || height > overlay_max_height()) {
         return false;
     }
     // Never the slot last announced, which the producer may be copying now.
@@ -1467,7 +1466,7 @@ bool ExternalFrameLink::publish_overlay(const uint8_t* rgba, int width, int heig
     ExternalSlotState& state = overlay_area()->slots[slot];
     const uint64_t sequence = state.sequence.load(std::memory_order_relaxed);
     state.sequence.store(sequence + 1, std::memory_order_release);
-    std::memcpy(static_cast<uint8_t*>(memory_) + ExternalOverlayArea::slot_offset(slot), rgba,
+    std::memcpy(static_cast<uint8_t*>(memory_) + ExternalOverlayArea::slot_offset(slot, large_overlay()), rgba,
                 static_cast<std::size_t>(width) * height * 4);
     ++overlay_serial_;
     state.width.store(static_cast<uint32_t>(width), std::memory_order_relaxed);
@@ -1487,8 +1486,7 @@ bool ExternalFrameLink::publish_overlay_animation(ExternalOverlayAnimation::Mode
                                                   const uint8_t* contents, int width, int height,
                                                   bool takes_input) {
     if (!overlay_animation_supported() || memory_ == nullptr || backdrop == nullptr || contents == nullptr ||
-        width <= 0 || height <= 0 || width > ExternalOverlayArea::kMaxWidth ||
-        height > ExternalOverlayArea::kMaxHeight) {
+        width <= 0 || height <= 0 || width > overlay_max_width() || height > overlay_max_height()) {
         return false;
     }
     // Both slots: the producer copies them out as soon as it hears, and the
@@ -1499,7 +1497,8 @@ bool ExternalFrameLink::publish_overlay_animation(ExternalOverlayAnimation::Mode
         ExternalSlotState& state = overlay_area()->slots[slot];
         const uint64_t sequence = state.sequence.load(std::memory_order_relaxed);
         state.sequence.store(sequence + 1, std::memory_order_release);
-        std::memcpy(static_cast<uint8_t*>(memory_) + ExternalOverlayArea::slot_offset(slot), pictures[slot],
+        std::memcpy(static_cast<uint8_t*>(memory_) + ExternalOverlayArea::slot_offset(slot, large_overlay()),
+                    pictures[slot],
                     static_cast<std::size_t>(width) * height * 4);
         state.width.store(static_cast<uint32_t>(width), std::memory_order_relaxed);
         state.height.store(static_cast<uint32_t>(height), std::memory_order_relaxed);
@@ -1823,8 +1822,9 @@ bool ExternalFrameProducer::connect(const std::string& socket_path,
         close();
         return false;
     }
-    memory_bytes_ = offered >= ExternalOverlayArea::end() ? ExternalOverlayArea::end()
-                                                          : ExternalSharedHeader::total_bytes();
+    memory_bytes_ = offered >= ExternalOverlayArea::large_end() ? ExternalOverlayArea::large_end()
+                    : offered >= ExternalOverlayArea::end()     ? ExternalOverlayArea::end()
+                                                                : ExternalSharedHeader::total_bytes();
     memory_ = ::MapViewOfFile(memory_mapping_, FILE_MAP_ALL_ACCESS, 0, 0, memory_bytes_);
     if (memory_ == nullptr) {
         if (error != nullptr) *error = "could not map the shared memory: " + link_error_text();
@@ -1840,9 +1840,12 @@ bool ExternalFrameProducer::connect(const std::string& socket_path,
     // The overlay too when the consumer made room for it -- an older one's
     // memory ends with the frames, and is mapped exactly as it always was.
     struct stat described {};
-    const bool roomy = ::fstat(memory_fd_, &described) == 0 && described.st_size > 0 &&
-                       static_cast<std::size_t>(described.st_size) >= ExternalOverlayArea::end();
-    memory_bytes_ = roomy ? ExternalOverlayArea::end() : ExternalSharedHeader::total_bytes();
+    const std::size_t size = ::fstat(memory_fd_, &described) == 0 && described.st_size > 0
+                                 ? static_cast<std::size_t>(described.st_size)
+                                 : 0;
+    memory_bytes_ = size >= ExternalOverlayArea::large_end() ? ExternalOverlayArea::large_end()
+                    : size >= ExternalOverlayArea::end()     ? ExternalOverlayArea::end()
+                                                             : ExternalSharedHeader::total_bytes();
     memory_ = ::mmap(nullptr, memory_bytes_, PROT_READ | PROT_WRITE, MAP_SHARED, memory_fd_, 0);
     if (memory_ == MAP_FAILED) {
         memory_ = nullptr;
@@ -1868,8 +1871,9 @@ bool ExternalFrameProducer::connect(const std::string& socket_path,
     put_u32(body, static_cast<uint32_t>(info.audio_sample_rate));
     put_u32(body, static_cast<uint32_t>(info.frames_per_second * 1000.0 + 0.5));
     // An overlay is only offered when there is memory to carry it.
-    const uint32_t features =
-        overlay_available() ? info.features : (info.features & ~kExternalFeatureOverlay);
+    uint32_t features = overlay_available() ? info.features : (info.features & ~kExternalFeatureOverlay);
+    if (!large_overlay_available()) features &= ~kExternalFeatureLargeOverlay;
+    large_overlay_ = (features & kExternalFeatureLargeOverlay) != 0u;
     put_u32(body, features);
     std::vector<uint8_t> message;
     frame_message(ExternalControl::Hello, body, message);
@@ -1909,6 +1913,7 @@ void ExternalFrameProducer::close() {
     }
 #endif
     memory_bytes_ = 0;
+    large_overlay_ = false;
     next_slot_[0] = 0;
     next_slot_[1] = 0;
     overlay_visible_ = false;
@@ -2253,12 +2258,12 @@ bool ExternalFrameProducer::take_overlay(std::vector<uint8_t>& rgba, int& width,
     }
     const int w = static_cast<int>(state.width.load(std::memory_order_relaxed));
     const int h = static_cast<int>(state.height.load(std::memory_order_relaxed));
-    if (w <= 0 || h <= 0 || w > ExternalOverlayArea::kMaxWidth ||
-        h > ExternalOverlayArea::kMaxHeight) {
+    if (w <= 0 || h <= 0 || w > ExternalOverlayArea::max_width(large_overlay_) ||
+        h > ExternalOverlayArea::max_height(large_overlay_)) {
         return false;
     }
     const uint8_t* source =
-        static_cast<const uint8_t*>(memory_) + ExternalOverlayArea::slot_offset(overlay_slot_);
+        static_cast<const uint8_t*>(memory_) + ExternalOverlayArea::slot_offset(overlay_slot_, large_overlay_);
     rgba.assign(source, source + static_cast<std::size_t>(w) * h * 4);
     if (state.sequence.load(std::memory_order_acquire) != before) {
         return false;
@@ -2287,7 +2292,8 @@ bool ExternalFrameProducer::take_overlay_animation(ExternalOverlayAnimationFrame
         }
         const int w = static_cast<int>(state.width.load(std::memory_order_relaxed));
         const int h = static_cast<int>(state.height.load(std::memory_order_relaxed));
-        if (w <= 0 || h <= 0 || w > ExternalOverlayArea::kMaxWidth || h > ExternalOverlayArea::kMaxHeight ||
+        if (w <= 0 || h <= 0 || w > ExternalOverlayArea::max_width(large_overlay_) ||
+            h > ExternalOverlayArea::max_height(large_overlay_) ||
             (index == 1 && (w != width || h != height))) {
             animation_pending_ = false;
             return false;
@@ -2295,7 +2301,7 @@ bool ExternalFrameProducer::take_overlay_animation(ExternalOverlayAnimationFrame
         width = w;
         height = h;
         const uint8_t* source =
-            static_cast<const uint8_t*>(memory_) + ExternalOverlayArea::slot_offset(slots[index]);
+            static_cast<const uint8_t*>(memory_) + ExternalOverlayArea::slot_offset(slots[index], large_overlay_);
         into[index]->assign(source, source + static_cast<std::size_t>(w) * h * 4);
         if (state.sequence.load(std::memory_order_acquire) != before) {
             animation_pending_ = false;
