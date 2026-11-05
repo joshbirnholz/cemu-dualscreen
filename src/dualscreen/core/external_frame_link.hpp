@@ -927,6 +927,10 @@ private:
     int peer_fd_ = -1;
     int memory_fd_ = -1;
     void* memory_ = nullptr;
+    // Windows: the shared memory is a named file mapping rather than a file
+    // descriptor, and its name is what goes over the link.
+    void* memory_mapping_ = nullptr;
+    std::string memory_name_;
     std::string socket_path_;
 
     ExternalStreamInfo info_;
@@ -1143,6 +1147,7 @@ private:
     int fd_ = -1;
     int memory_fd_ = -1;
     void* memory_ = nullptr;
+    void* memory_mapping_ = nullptr;  // Windows: see ExternalFrameLink's
     // How much of it is mapped: ExternalSharedHeader's, and the overlay's
     // after it when the consumer made room for one.
     std::size_t memory_bytes_ = 0;
