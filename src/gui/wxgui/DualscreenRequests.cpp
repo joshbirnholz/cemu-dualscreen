@@ -10,6 +10,7 @@
 #include "Cafe/OS/libs/nn_nfp/nn_nfp.h"
 #include "Cafe/GameProfile/GameProfile.h"
 #include "config/CemuConfig.h"
+#include "audio/IAudioAPI.h"
 
 #include "DualscreenSession.h"
 #include "input/InputManager.h"
@@ -156,6 +157,24 @@ namespace
 			choices.push_back(std::to_string(percent) + "%");
 		return choices;
 	}
+
+	// The TV's volume, in percent, as the steps of its slider.
+	std::vector<std::string> PercentChoices()
+	{
+		std::vector<std::string> choices;
+		for (int percent = 0; percent <= 100; ++percent)
+			choices.push_back(std::to_string(percent) + "%");
+		return choices;
+	}
+
+	// A switch's two, as Dualscreen draws one.
+	const std::vector<std::string> kOffOn = {"Off", "On"};
+
+	// The order of CafeConsoleLanguage, named as Cemu's General settings
+	// name them.
+	const std::vector<std::string> kConsoleLanguages = {
+		"Japanese", "English", "French", "German", "Italian", "Spanish",
+		"Chinese", "Korean", "Dutch", "Portuguese", "Russian", "Taiwanese"};
 
 	// What each of Dualscreen's players is to the game, in the order of
 	// kPlayerTypeChoices: a Pro Controller, a Classic Controller Pro, or a Wii
@@ -490,6 +509,45 @@ namespace
 			{"tv_channels", "TV audio", {"Mono", "Stereo", "Surround"},
 			 []() { return (int)GetConfig().tv_channels; },
 			 [](int choice) { GetConfig().tv_channels = (AudioChannels)choice; }, kStereo},
+			// The rest of Cemu's own settings that Dualscreen keeps in its
+			// Settings, under Wii U, the same for every game -- like TV audio
+			// -- and tells it here. Dualscreen keeps them out of a game's
+			// Options.
+			//
+			// The language games are told the console is set to: read as a
+			// game starts, as from Cemu's General settings.
+			{"console_language", "Console Language", kConsoleLanguages,
+			 []() { return (int)GetConfig().console_language.GetValue(); },
+			 [](int choice) { GetConfig().console_language = (CafeConsoleLanguage)choice; }, 1},
+			// At once, as Cemu's Audio settings' slider does.
+			{"tv_volume", "TV Volume", PercentChoices(),
+			 []() { return std::clamp((int)GetConfig().tv_volume, 0, 100); },
+			 [](int choice) {
+				 GetConfig().tv_volume = choice;
+				 if (g_tvAudio)
+					 g_tvAudio->SetVolume(choice);
+			 }, 50, false, nullptr, nullptr, true},
+			// Vulkan only, as Cemu's Graphics settings say.
+			{"async_compile", "Async Shader Compile", kOffOn,
+			 []() { return GetConfig().async_compile.GetValue() ? 1 : 0; },
+			 [](int choice) { GetConfig().async_compile = choice == 1; }, 1},
+			// The console's sound as a game boots.
+			{"play_boot_sound", "Intro Sound", kOffOn,
+			 []() { return GetConfig().play_boot_sound.GetValue() ? 1 : 0; },
+			 [](int choice) { GetConfig().play_boot_sound = choice == 1; }, 0},
+			// Cemu's Notifications: what it says in the corner of the game.
+			{"notify_controller_profiles", "Controller Profiles", kOffOn,
+			 []() { return GetConfig().notification.controller_profiles ? 1 : 0; },
+			 [](int choice) { GetConfig().notification.controller_profiles = choice == 1; }, 1},
+			{"notify_controller_battery", "Low Controller Battery", kOffOn,
+			 []() { return GetConfig().notification.controller_battery ? 1 : 0; },
+			 [](int choice) { GetConfig().notification.controller_battery = choice == 1; }, 0},
+			{"notify_shader_compiling", "Shader Compiling", kOffOn,
+			 []() { return GetConfig().notification.shader_compiling ? 1 : 0; },
+			 [](int choice) { GetConfig().notification.shader_compiling = choice == 1; }, 1},
+			{"notify_friends", "Friend List", kOffOn,
+			 []() { return GetConfig().notification.friends ? 1 : 0; },
+			 [](int choice) { GetConfig().notification.friends = choice == 1; }, 1},
 			// As the Game Profile window offers it, less the interpreter,
 			// which is for debugging.
 			{"cpu_mode", "CPU Mode", {"Auto", "Multi-core", "Single-core"},
