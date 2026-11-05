@@ -4,9 +4,34 @@
 #include <chrono>
 #include <cstring>
 
-#if defined(__linux__)
+#if defined(__linux__) || defined(_WIN32)
 
 #include <errno.h>
+#include <atomic>
+#include <cstdio>
+#include <cstdlib>
+
+#if defined(_WIN32)
+// Windows has no file descriptors to pass and, before 1803 and under Wine,
+// no Unix sockets: the link is a TCP connection on the loopback address,
+// whose port the consumer writes into the file at the "socket path", and the
+// shared memory a named file mapping whose name goes over it first.
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#include <windows.h>
+#undef near
+#undef far
+#undef interface
+#if defined(_MSC_VER)
+#pragma comment(lib, "ws2_32.lib")
+#endif
+#else
 #include <fcntl.h>
 #include <poll.h>
 #include <sys/mman.h>
@@ -17,9 +42,115 @@
 #if defined(__ANDROID__)
 #include <sys/syscall.h>
 #endif
+#endif
 
 namespace ds {
 namespace {
+
+// --- the few socket calls, the same on both ---------------------------------
+
+#if defined(_WIN32)
+using LinkPollFd = WSAPOLLFD;
+constexpr short kLinkReadable = POLLRDNORM;
+constexpr short kLinkWritable = POLLWRNORM;
+
+void start_winsock() {
+    static const bool started = [] {
+        WSADATA data{};
+        return ::WSAStartup(MAKEWORD(2, 2), &data) == 0;
+    }();
+    (void)started;
+}
+
+int link_poll(LinkPollFd* fds, int count, int milliseconds) {
+    return ::WSAPoll(fds, static_cast<ULONG>(count), milliseconds);
+}
+
+long long link_send(int fd, const uint8_t* data, std::size_t size) {
+    const int chunk = static_cast<int>(std::min<std::size_t>(size, 1u << 30));
+    return ::send(static_cast<SOCKET>(fd), reinterpret_cast<const char*>(data), chunk, 0);
+}
+
+// The sockets here are non-blocking whenever this is called.
+long long link_receive_now(int fd, uint8_t* data, std::size_t size) {
+    return ::recv(static_cast<SOCKET>(fd), reinterpret_cast<char*>(data), static_cast<int>(size), 0);
+}
+
+void link_close(int fd) { ::closesocket(static_cast<SOCKET>(fd)); }
+
+void link_non_blocking(int fd) {
+    u_long on = 1;
+    ::ioctlsocket(static_cast<SOCKET>(fd), FIONBIO, &on);
+}
+
+// The last call's error as the errno value it means, so that the checks
+// below read the same on both.
+int link_error() {
+    switch (::WSAGetLastError()) {
+        case WSAEWOULDBLOCK: return EWOULDBLOCK;
+        case WSAEINTR: return EINTR;
+        default: return EIO;
+    }
+}
+
+std::string link_error_text() {
+    const DWORD code = ::GetLastError();
+    char* text = nullptr;
+    const DWORD length = ::FormatMessageA(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM |
+                                              FORMAT_MESSAGE_IGNORE_INSERTS,
+                                          nullptr, code, 0, reinterpret_cast<char*>(&text), 0, nullptr);
+    std::string out = length > 0 && text != nullptr ? std::string(text, length) : std::string();
+    if (text != nullptr) ::LocalFree(text);
+    while (!out.empty() && (out.back() == '\n' || out.back() == '\r' || out.back() == '.')) out.pop_back();
+    return out.empty() ? "error " + std::to_string(code) : out;
+}
+
+std::wstring wide_path(const std::string& path) {
+    if (path.empty()) return std::wstring();
+    const int length = ::MultiByteToWideChar(CP_UTF8, 0, path.data(), static_cast<int>(path.size()), nullptr, 0);
+    std::wstring out(static_cast<std::size_t>(length > 0 ? length : 0), L'\0');
+    if (length > 0) {
+        ::MultiByteToWideChar(CP_UTF8, 0, path.data(), static_cast<int>(path.size()), out.data(), length);
+    }
+    return out;
+}
+
+void remove_link_path(const std::string& path) { ::DeleteFileW(wide_path(path).c_str()); }
+
+// Small, and sent the moment they are written: the link's own messages are
+// a few bytes each, and each one is waited for.
+void link_no_delay(int fd) {
+    BOOL on = TRUE;
+    ::setsockopt(static_cast<SOCKET>(fd), IPPROTO_TCP, TCP_NODELAY, reinterpret_cast<const char*>(&on),
+                 sizeof(on));
+}
+#else
+using LinkPollFd = pollfd;
+constexpr short kLinkReadable = POLLIN;
+constexpr short kLinkWritable = POLLOUT;
+
+int link_poll(LinkPollFd* fds, int count, int milliseconds) {
+    return ::poll(fds, static_cast<nfds_t>(count), milliseconds);
+}
+
+long long link_send(int fd, const uint8_t* data, std::size_t size) {
+    return ::send(fd, data, size, MSG_NOSIGNAL);
+}
+
+long long link_receive_now(int fd, uint8_t* data, std::size_t size) {
+    return ::recv(fd, data, size, MSG_DONTWAIT);
+}
+
+void link_close(int fd) { ::close(fd); }
+
+void link_non_blocking(int fd) { ::fcntl(fd, F_SETFL, ::fcntl(fd, F_GETFL, 0) | O_NONBLOCK); }
+
+int link_error() { return errno; }
+
+std::string link_error_text() { return std::strerror(errno); }
+
+void remove_link_path(const std::string& path) { ::unlink(path.c_str()); }
+#endif
 
 // Message framing on the socket: a kind and a length, then that many bytes.
 // The same shape the network protocol uses, for the same reason -- a stream
@@ -126,28 +257,28 @@ void frame_message(ExternalControl kind, const std::vector<uint8_t>& body,
 // consumer that has genuinely stopped draining should fail this send rather
 // than hang whoever called it forever.
 bool wait_writable(int fd, int milliseconds) {
-    pollfd waiting{};
+    LinkPollFd waiting{};
     waiting.fd = fd;
-    waiting.events = POLLOUT;
+    waiting.events = kLinkWritable;
     int ready = 0;
     do {
-        ready = ::poll(&waiting, 1, milliseconds);
-    } while (ready < 0 && errno == EINTR);
+        ready = link_poll(&waiting, 1, milliseconds);
+    } while (ready < 0 && link_error() == EINTR);
     return ready > 0;
 }
 
 bool write_all(int fd, const uint8_t* data, std::size_t size) {
     std::size_t sent = 0;
     while (sent < size) {
-        const ssize_t wrote = ::send(fd, data + sent, size - sent, MSG_NOSIGNAL);
+        const long long wrote = link_send(fd, data + sent, size - sent);
         if (wrote > 0) {
             sent += static_cast<std::size_t>(wrote);
             continue;
         }
-        if (wrote < 0 && errno == EINTR) {
+        if (wrote < 0 && link_error() == EINTR) {
             continue;
         }
-        if (wrote < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+        if (wrote < 0 && (link_error() == EAGAIN || link_error() == EWOULDBLOCK)) {
             // The kernel's send buffer is full, not gone -- wait for room
             // rather than spinning a whole CPU core retrying send() until
             // there is some, which is what this did before. That spin was
@@ -193,15 +324,15 @@ bool write_best_effort(int fd, const uint8_t* data, std::size_t size, bool* out_
     if (out_sent != nullptr) *out_sent = false;
     std::size_t sent = 0;
     while (sent < size) {
-        const ssize_t wrote = ::send(fd, data + sent, size - sent, MSG_NOSIGNAL);
+        const long long wrote = link_send(fd, data + sent, size - sent);
         if (wrote > 0) {
             sent += static_cast<std::size_t>(wrote);
             continue;
         }
-        if (wrote < 0 && errno == EINTR) {
+        if (wrote < 0 && link_error() == EINTR) {
             continue;
         }
-        if (wrote < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+        if (wrote < 0 && (link_error() == EAGAIN || link_error() == EWOULDBLOCK)) {
             if (sent == 0) {
                 return true;  // nothing committed to the stream yet: drop it and move on
             }
@@ -221,7 +352,7 @@ bool drain_socket(int fd, std::vector<uint8_t>& inbox, bool& closed) {
     closed = false;
     uint8_t buffer[16384];
     while (true) {
-        const ssize_t got = ::recv(fd, buffer, sizeof(buffer), MSG_DONTWAIT);
+        const long long got = link_receive_now(fd, buffer, sizeof(buffer));
         if (got > 0) {
             inbox.insert(inbox.end(), buffer, buffer + got);
             continue;
@@ -230,10 +361,11 @@ bool drain_socket(int fd, std::vector<uint8_t>& inbox, bool& closed) {
             closed = true;
             return true;
         }
-        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+        const int code = link_error();
+        if (code == EAGAIN || code == EWOULDBLOCK) {
             return true;
         }
-        if (errno == EINTR) {
+        if (code == EINTR) {
             continue;
         }
         return false;
@@ -255,6 +387,144 @@ bool take_message(std::vector<uint8_t>& inbox, ExternalControl& kind,
     return true;
 }
 
+// Waits, but not for ever: a consumer that died between listening and accepting
+// would otherwise leave the producer hanging on a handshake nobody will finish.
+bool wait_readable(int fd, int milliseconds) {
+    LinkPollFd waiting{};
+    waiting.fd = fd;
+    waiting.events = kLinkReadable;
+    int ready = 0;
+    do {
+        ready = link_poll(&waiting, 1, milliseconds);
+    } while (ready < 0 && link_error() == EINTR);
+    return ready > 0;
+}
+
+#if defined(_WIN32)
+// The shared memory's name and size, as the first thing on the link: an 'M',
+// the size in bytes, the name's length and the name.
+bool send_memory_name(int socket_fd, const std::string& name, std::size_t bytes) {
+    std::vector<uint8_t> out;
+    out.push_back('M');
+    put_u32(out, static_cast<uint32_t>(bytes));
+    put_u16(out, static_cast<uint16_t>(name.size()));
+    out.insert(out.end(), name.begin(), name.end());
+    return write_all(socket_fd, out.data(), out.size());
+}
+
+// Exactly `size` bytes, waiting at most five seconds for each part of them.
+bool read_exactly(int socket_fd, uint8_t* data, std::size_t size) {
+    std::size_t got = 0;
+    while (got < size) {
+        if (!wait_readable(socket_fd, 5000)) return false;
+        const int read = ::recv(static_cast<SOCKET>(socket_fd), reinterpret_cast<char*>(data + got),
+                                static_cast<int>(size - got), 0);
+        if (read <= 0) {
+            if (read < 0 && (link_error() == EWOULDBLOCK || link_error() == EINTR)) continue;
+            return false;
+        }
+        got += static_cast<std::size_t>(read);
+    }
+    return true;
+}
+
+bool receive_memory_name(int socket_fd, std::string& out_name, std::size_t& out_bytes) {
+    uint8_t head[7] = {};
+    if (!read_exactly(socket_fd, head, sizeof(head)) || head[0] != 'M') return false;
+    out_bytes = read_u32(head + 1);
+    std::string name(read_u16(head + 5), '\0');
+    if (name.empty() || !read_exactly(socket_fd, reinterpret_cast<uint8_t*>(name.data()), name.size())) {
+        return false;
+    }
+    out_name = std::move(name);
+    return true;
+}
+
+// A name no other session on this machine is using.
+std::string new_memory_name() {
+    static std::atomic<unsigned> counter{0};
+    return "Local\\dualscreen-frames-" + std::to_string(::GetCurrentProcessId()) + "-" +
+           std::to_string(counter.fetch_add(1)) + "-" + std::to_string(::GetTickCount64());
+}
+
+// Listens on a port of the loopback address and says which in the file at
+// `path`, which a producer reads to find it.
+int listen_at(const std::string& path, std::string* error) {
+    start_winsock();
+    const SOCKET listener = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (listener == INVALID_SOCKET) {
+        if (error != nullptr) *error = "no socket: " + link_error_text();
+        return -1;
+    }
+    const int fd = static_cast<int>(listener);
+    sockaddr_in address{};
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    address.sin_port = 0;
+    int length = sizeof(address);
+    if (::bind(listener, reinterpret_cast<sockaddr*>(&address), sizeof(address)) != 0 ||
+        ::getsockname(listener, reinterpret_cast<sockaddr*>(&address), &length) != 0 ||
+        ::listen(listener, 1) != 0) {
+        if (error != nullptr) *error = "could not listen: " + link_error_text();
+        link_close(fd);
+        return -1;
+    }
+    link_non_blocking(fd);
+    FILE* file = ::_wfopen(wide_path(path).c_str(), L"wb");
+    const std::string port = std::to_string(ntohs(address.sin_port)) + "\n";
+    const bool written = file != nullptr && std::fwrite(port.data(), 1, port.size(), file) == port.size();
+    if (file != nullptr) std::fclose(file);
+    if (!written) {
+        if (error != nullptr) *error = "could not claim " + path;
+        link_close(fd);
+        return -1;
+    }
+    return fd;
+}
+
+int connect_to(const std::string& path, std::string* error) {
+    start_winsock();
+    FILE* file = ::_wfopen(wide_path(path).c_str(), L"rb");
+    char text[32] = {};
+    const std::size_t length = file != nullptr ? std::fread(text, 1, sizeof(text) - 1, file) : 0;
+    if (file != nullptr) std::fclose(file);
+    const long port = length > 0 ? std::strtol(text, nullptr, 10) : 0;
+    if (port <= 0 || port > 65535) {
+        if (error != nullptr) *error = "nothing is listening on " + path;
+        return -1;
+    }
+    const SOCKET socket = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (socket == INVALID_SOCKET) {
+        if (error != nullptr) *error = "no socket: " + link_error_text();
+        return -1;
+    }
+    const int fd = static_cast<int>(socket);
+    sockaddr_in address{};
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    address.sin_port = htons(static_cast<u_short>(port));
+    if (::connect(socket, reinterpret_cast<sockaddr*>(&address), sizeof(address)) != 0) {
+        if (error != nullptr) *error = "nothing is listening on " + path + ": " + link_error_text();
+        link_close(fd);
+        return -1;
+    }
+    link_no_delay(fd);
+    return fd;
+}
+
+// The next producer waiting, or -1 with `waiting` set when there is none yet.
+int accept_from(int listen_fd, bool& waiting) {
+    const SOCKET socket = ::accept(static_cast<SOCKET>(listen_fd), nullptr, nullptr);
+    if (socket == INVALID_SOCKET) {
+        waiting = link_error() == EWOULDBLOCK || link_error() == EINTR;
+        return -1;
+    }
+    const int fd = static_cast<int>(socket);
+    link_non_blocking(fd);
+    link_no_delay(fd);
+    return fd;
+}
+#else
 // The shared memory travels as a file descriptor rather than a name. Nothing is
 // left in the filesystem for a crash to strand, and two sessions on one machine
 // cannot find each other's buffers.
@@ -280,18 +550,6 @@ bool send_fd(int socket_fd, int payload_fd) {
     return ::sendmsg(socket_fd, &message, MSG_NOSIGNAL) == 1;
 }
 
-// Waits, but not for ever: a consumer that died between listening and accepting
-// would otherwise leave the producer hanging on a handshake nobody will finish.
-bool wait_readable(int fd, int milliseconds) {
-    pollfd waiting{};
-    waiting.fd = fd;
-    waiting.events = POLLIN;
-    int ready = 0;
-    do {
-        ready = ::poll(&waiting, 1, milliseconds);
-    } while (ready < 0 && errno == EINTR);
-    return ready > 0;
-}
 
 bool receive_fd(int socket_fd, int& out_fd) {
     if (!wait_readable(socket_fd, 5000)) {
@@ -336,6 +594,61 @@ bool bind_unix(int fd, const std::string& path, std::string* error) {
     std::memcpy(address.sun_path, path.c_str(), path.size() + 1);
     return ::bind(fd, reinterpret_cast<sockaddr*>(&address), sizeof(address)) == 0;
 }
+
+// A Unix socket listening at `path`.
+int listen_at(const std::string& path, std::string* error) {
+    const int fd = ::socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0);
+    if (fd < 0) {
+        if (error != nullptr) *error = std::string("no socket: ") + std::strerror(errno);
+        return -1;
+    }
+    // A path left behind by a crash is not a reason to refuse to start.
+    ::unlink(path.c_str());
+    if (!bind_unix(fd, path, error)) {
+        if (error != nullptr && error->empty()) {
+            *error = "could not claim " + path + ": " + std::strerror(errno);
+        }
+        ::close(fd);
+        return -1;
+    }
+    if (::listen(fd, 1) != 0) {
+        if (error != nullptr) *error = std::string("could not listen: ") + std::strerror(errno);
+        ::close(fd);
+        return -1;
+    }
+    return fd;
+}
+
+int connect_to(const std::string& path, std::string* error) {
+    const int fd = ::socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    if (fd < 0) {
+        if (error != nullptr) *error = std::string("no socket: ") + std::strerror(errno);
+        return -1;
+    }
+    sockaddr_un address{};
+    address.sun_family = AF_UNIX;
+    if (path.size() + 1 > sizeof(address.sun_path)) {
+        if (error != nullptr) *error = "that socket path is too long";
+        ::close(fd);
+        return -1;
+    }
+    std::memcpy(address.sun_path, path.c_str(), path.size() + 1);
+    if (::connect(fd, reinterpret_cast<sockaddr*>(&address), sizeof(address)) != 0) {
+        if (error != nullptr) {
+            *error = "nothing is listening on " + path + ": " + std::strerror(errno);
+        }
+        ::close(fd);
+        return -1;
+    }
+    return fd;
+}
+
+int accept_from(int listen_fd, bool& waiting) {
+    const int fd = ::accept4(listen_fd, nullptr, nullptr, SOCK_CLOEXEC | SOCK_NONBLOCK);
+    if (fd < 0) waiting = errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR;
+    return fd;
+}
+#endif
 
 // Reads a message body front to back, and goes on answering zeros and empty
 // strings once it has run past the end, so one check of `ok` at the end
@@ -546,17 +859,60 @@ bool read_game_dialog(const std::vector<uint8_t>& body, ExternalGameDialog& out)
 ExternalFrameLink::~ExternalFrameLink() { close(); }
 
 std::string ExternalFrameLink::default_socket_path() {
+#if defined(_WIN32)
+    // The user's own temporary folder, in UTF-8 with forward slashes.
+    wchar_t folder[MAX_PATH + 1] = {};
+    const DWORD length = ::GetTempPathW(MAX_PATH + 1, folder);
+    std::string path;
+    if (length > 0 && length <= MAX_PATH) {
+        const int bytes = ::WideCharToMultiByte(CP_UTF8, 0, folder, static_cast<int>(length), nullptr, 0, nullptr,
+                                                nullptr);
+        path.resize(static_cast<std::size_t>(bytes > 0 ? bytes : 0));
+        if (bytes > 0) {
+            ::WideCharToMultiByte(CP_UTF8, 0, folder, static_cast<int>(length), path.data(), bytes, nullptr,
+                                  nullptr);
+        }
+    }
+    for (char& character : path) {
+        if (character == '\\') character = '/';
+    }
+    if (path.empty()) path = "C:/Windows/Temp/";
+    if (path.back() != '/') path += '/';
+    return path + "dualscreen-external.link";
+#else
     const char* runtime = std::getenv("XDG_RUNTIME_DIR");
     if (runtime != nullptr && runtime[0] != '\0') {
         return std::string(runtime) + "/dualscreen-external.sock";
     }
     return "/tmp/dualscreen-external-" + std::to_string(::getuid()) + ".sock";
+#endif
 }
 
 bool ExternalFrameLink::listen(const std::string& socket_path, std::string* error) {
     close();
     socket_path_ = socket_path;
 
+    // Room for the overlay after the frames: see ExternalOverlayArea. Never
+    // touched by a producer that cannot draw one, so it costs nothing there.
+    const std::size_t bytes = ExternalOverlayArea::end();
+#if defined(_WIN32)
+    memory_name_ = new_memory_name();
+    const unsigned long long size = bytes;
+    memory_mapping_ = ::CreateFileMappingA(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE,
+                                           static_cast<DWORD>(size >> 32), static_cast<DWORD>(size & 0xFFFFFFFFu),
+                                           memory_name_.c_str());
+    if (memory_mapping_ == nullptr) {
+        if (error != nullptr) *error = "no shared memory: " + link_error_text();
+        close();
+        return false;
+    }
+    memory_ = ::MapViewOfFile(memory_mapping_, FILE_MAP_ALL_ACCESS, 0, 0, bytes);
+    if (memory_ == nullptr) {
+        if (error != nullptr) *error = "could not map the shared memory: " + link_error_text();
+        close();
+        return false;
+    }
+#else
 #if defined(__ANDROID__) && __ANDROID_API__ < 30
     // Bionic only wraps it from Android 11; the kernel has had it far longer.
     memory_fd_ = static_cast<int>(::syscall(__NR_memfd_create, "dualscreen-frames", MFD_CLOEXEC));
@@ -567,9 +923,6 @@ bool ExternalFrameLink::listen(const std::string& socket_path, std::string* erro
         if (error != nullptr) *error = std::string("no shared memory: ") + std::strerror(errno);
         return false;
     }
-    // Room for the overlay after the frames: see ExternalOverlayArea. Never
-    // touched by a producer that cannot draw one, so it costs nothing there.
-    const std::size_t bytes = ExternalOverlayArea::end();
     if (::ftruncate(memory_fd_, static_cast<off_t>(bytes)) != 0) {
         if (error != nullptr) {
             *error = std::string("could not size the shared memory: ") + std::strerror(errno);
@@ -586,6 +939,7 @@ bool ExternalFrameLink::listen(const std::string& socket_path, std::string* erro
         close();
         return false;
     }
+#endif
     // Placement-new rather than memset: the atomics in here have to be
     // constructed, and a zeroed buffer is only accidentally a valid one.
     new (memory_) ExternalSharedHeader();
@@ -593,23 +947,8 @@ bool ExternalFrameLink::listen(const std::string& socket_path, std::string* erro
     header()->magic.store(ExternalSharedHeader::kMagic, std::memory_order_relaxed);
     header()->version.store(ExternalSharedHeader::kVersion, std::memory_order_release);
 
-    listen_fd_ = ::socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0);
+    listen_fd_ = listen_at(socket_path_, error);
     if (listen_fd_ < 0) {
-        if (error != nullptr) *error = std::string("no socket: ") + std::strerror(errno);
-        close();
-        return false;
-    }
-    // A path left behind by a crash is not a reason to refuse to start.
-    ::unlink(socket_path_.c_str());
-    if (!bind_unix(listen_fd_, socket_path_, error)) {
-        if (error != nullptr && error->empty()) {
-            *error = "could not claim " + socket_path_ + ": " + std::strerror(errno);
-        }
-        close();
-        return false;
-    }
-    if (::listen(listen_fd_, 1) != 0) {
-        if (error != nullptr) *error = std::string("could not listen: ") + std::strerror(errno);
         close();
         return false;
     }
@@ -618,13 +957,24 @@ bool ExternalFrameLink::listen(const std::string& socket_path, std::string* erro
 
 void ExternalFrameLink::close() {
     if (peer_fd_ >= 0) {
-        ::close(peer_fd_);
+        link_close(peer_fd_);
         peer_fd_ = -1;
     }
     if (listen_fd_ >= 0) {
-        ::close(listen_fd_);
+        link_close(listen_fd_);
         listen_fd_ = -1;
     }
+#if defined(_WIN32)
+    if (memory_ != nullptr) {
+        ::UnmapViewOfFile(memory_);
+        memory_ = nullptr;
+    }
+    if (memory_mapping_ != nullptr) {
+        ::CloseHandle(memory_mapping_);
+        memory_mapping_ = nullptr;
+    }
+    memory_name_.clear();
+#else
     if (memory_ != nullptr) {
         ::munmap(memory_, ExternalOverlayArea::end());
         memory_ = nullptr;
@@ -633,8 +983,9 @@ void ExternalFrameLink::close() {
         ::close(memory_fd_);
         memory_fd_ = -1;
     }
+#endif
     if (!socket_path_.empty()) {
-        ::unlink(socket_path_.c_str());
+        remove_link_path(socket_path_);
         socket_path_.clear();
     }
     have_info_ = false;
@@ -686,12 +1037,13 @@ void ExternalFrameLink::close() {
 }
 
 bool ExternalFrameLink::accept_peer(std::string* error) {
-    const int fd = ::accept4(listen_fd_, nullptr, nullptr, SOCK_CLOEXEC | SOCK_NONBLOCK);
+    bool waiting = false;
+    const int fd = accept_from(listen_fd_, waiting);
     if (fd < 0) {
-        if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) {
+        if (waiting) {
             return true;  // nobody yet, which is not a failure
         }
-        if (error != nullptr) *error = std::string("could not accept: ") + std::strerror(errno);
+        if (error != nullptr) *error = "could not accept: " + link_error_text();
         return false;
     }
     peer_fd_ = fd;
@@ -720,9 +1072,14 @@ bool ExternalFrameLink::accept_peer(std::string* error) {
     // The memory goes over first, before anything is said about it, so a
     // producer never has to handle a frame announcement for memory it cannot
     // see yet.
-    if (!send_fd(peer_fd_, memory_fd_)) {
+#if defined(_WIN32)
+    const bool handed_over = send_memory_name(peer_fd_, memory_name_, ExternalOverlayArea::end());
+#else
+    const bool handed_over = send_fd(peer_fd_, memory_fd_);
+#endif
+    if (!handed_over) {
         if (error != nullptr) *error = "could not hand over the shared memory";
-        ::close(peer_fd_);
+        link_close(peer_fd_);
         peer_fd_ = -1;
         return false;
     }
@@ -747,7 +1104,7 @@ bool ExternalFrameLink::poll(std::string* error) {
 bool ExternalFrameLink::read_messages(std::string* error) {
     bool closed = false;
     if (!drain_socket(peer_fd_, inbox_, closed)) {
-        if (error != nullptr) *error = std::string("the game's link failed: ") + std::strerror(errno);
+        if (error != nullptr) *error = "the game's link failed: " + link_error_text();
         return false;
     }
 
@@ -974,10 +1331,10 @@ bool ExternalFrameLink::wait_for_message(int timeout_ms) const {
     if (fd < 0) {
         return false;
     }
-    pollfd waiting {};
+    LinkPollFd waiting {};
     waiting.fd = fd;
-    waiting.events = POLLIN;
-    return ::poll(&waiting, 1, timeout_ms) > 0;
+    waiting.events = kLinkReadable;
+    return link_poll(&waiting, 1, timeout_ms) > 0;
 }
 
 ExternalFrameLink::FrameCounts ExternalFrameLink::take_frame_counts(ScreenId screen) {
@@ -1447,26 +1804,34 @@ ExternalFrameProducer::~ExternalFrameProducer() { close(); }
 bool ExternalFrameProducer::connect(const std::string& socket_path,
                                     const ExternalStreamInfo& info, std::string* error) {
     close();
-    fd_ = ::socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    fd_ = connect_to(socket_path, error);
     if (fd_ < 0) {
-        if (error != nullptr) *error = std::string("no socket: ") + std::strerror(errno);
-        return false;
-    }
-    sockaddr_un address{};
-    address.sun_family = AF_UNIX;
-    if (socket_path.size() + 1 > sizeof(address.sun_path)) {
-        if (error != nullptr) *error = "that socket path is too long";
         close();
         return false;
     }
-    std::memcpy(address.sun_path, socket_path.c_str(), socket_path.size() + 1);
-    if (::connect(fd_, reinterpret_cast<sockaddr*>(&address), sizeof(address)) != 0) {
-        if (error != nullptr) {
-            *error = "nothing is listening on " + socket_path + ": " + std::strerror(errno);
-        }
+#if defined(_WIN32)
+    std::string name;
+    std::size_t offered = 0;
+    if (!receive_memory_name(fd_, name, offered)) {
+        if (error != nullptr) *error = "the far end did not hand over any shared memory";
         close();
         return false;
     }
+    memory_mapping_ = ::OpenFileMappingA(FILE_MAP_ALL_ACCESS, FALSE, name.c_str());
+    if (memory_mapping_ == nullptr || offered < ExternalSharedHeader::total_bytes()) {
+        if (error != nullptr) *error = "could not open the shared memory: " + link_error_text();
+        close();
+        return false;
+    }
+    memory_bytes_ = offered >= ExternalOverlayArea::end() ? ExternalOverlayArea::end()
+                                                          : ExternalSharedHeader::total_bytes();
+    memory_ = ::MapViewOfFile(memory_mapping_, FILE_MAP_ALL_ACCESS, 0, 0, memory_bytes_);
+    if (memory_ == nullptr) {
+        if (error != nullptr) *error = "could not map the shared memory: " + link_error_text();
+        close();
+        return false;
+    }
+#else
     if (!receive_fd(fd_, memory_fd_)) {
         if (error != nullptr) *error = "the far end did not hand over any shared memory";
         close();
@@ -1487,6 +1852,7 @@ bool ExternalFrameProducer::connect(const std::string& socket_path,
         close();
         return false;
     }
+#endif
     if (header()->magic.load(std::memory_order_acquire) != ExternalSharedHeader::kMagic ||
         header()->version.load(std::memory_order_acquire) != ExternalSharedHeader::kVersion) {
         if (error != nullptr) *error = "the far end is speaking a different version of this";
@@ -1514,24 +1880,35 @@ bool ExternalFrameProducer::connect(const std::string& socket_path,
     }
     // Non-blocking only after the handshake, which is the one part that has to
     // happen in order.
-    ::fcntl(fd_, F_SETFL, ::fcntl(fd_, F_GETFL, 0) | O_NONBLOCK);
+    link_non_blocking(fd_);
     return true;
 }
 
 void ExternalFrameProducer::close() {
     if (fd_ >= 0) {
-        ::close(fd_);
+        link_close(fd_);
         fd_ = -1;
     }
+#if defined(_WIN32)
+    if (memory_ != nullptr) {
+        ::UnmapViewOfFile(memory_);
+        memory_ = nullptr;
+    }
+    if (memory_mapping_ != nullptr) {
+        ::CloseHandle(memory_mapping_);
+        memory_mapping_ = nullptr;
+    }
+#else
     if (memory_ != nullptr) {
         ::munmap(memory_, memory_bytes_);
         memory_ = nullptr;
     }
-    memory_bytes_ = 0;
     if (memory_fd_ >= 0) {
         ::close(memory_fd_);
         memory_fd_ = -1;
     }
+#endif
+    memory_bytes_ = 0;
     next_slot_[0] = 0;
     next_slot_[1] = 0;
     overlay_visible_ = false;
@@ -1941,7 +2318,7 @@ bool ExternalFrameProducer::poll(bool& out_reset_requested, std::string* error) 
     }
     bool closed = false;
     if (!drain_socket(fd_, inbox_, closed)) {
-        if (error != nullptr) *error = std::strerror(errno);
+        if (error != nullptr) *error = link_error_text();
         return false;
     }
     ExternalControl kind = ExternalControl::Hello;
@@ -2087,7 +2464,7 @@ bool ExternalFrameProducer::poll(bool& out_reset_requested, std::string* error) 
 
 }  // namespace ds
 
-#else  // __linux__
+#else  // __linux__ || _WIN32
 
 namespace ds {
 
@@ -2195,11 +2572,25 @@ bool ExternalFrameProducer::poll(bool& out_reset_requested, std::string*) {
 namespace ds {
 
 uint64_t external_frame_clock_us() {
+#if defined(_WIN32)
+    // The performance counter, read directly: the two ends are built by
+    // different compilers there, whose steady_clocks need not agree.
+    static const long long frequency = [] {
+        LARGE_INTEGER value{};
+        ::QueryPerformanceFrequency(&value);
+        return value.QuadPart > 0 ? value.QuadPart : 1;
+    }();
+    LARGE_INTEGER now{};
+    ::QueryPerformanceCounter(&now);
+    const long long ticks = now.QuadPart;
+    return static_cast<uint64_t>((ticks / frequency) * 1000000 + (ticks % frequency) * 1000000 / frequency);
+#else
     // steady_clock is CLOCK_MONOTONIC wherever the link exists, which every
     // process on the machine reads alike.
     return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
                                      std::chrono::steady_clock::now().time_since_epoch())
                                      .count());
+#endif
 }
 
 }  // namespace ds
