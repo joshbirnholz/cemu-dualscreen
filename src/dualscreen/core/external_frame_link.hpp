@@ -109,6 +109,11 @@ inline constexpr uint32_t kExternalFeatureAmiiboReading = 256u;
 // original ones -- a menu at a 1440p or 4K display's own size, not scaled up
 // from 1080p. Only said when the consumer's memory has them.
 inline constexpr uint32_t kExternalFeatureLargeOverlay = 512u;
+// The producer sends a screen it is also showing and playing itself, when
+// asked to mirror it -- see request_screen()'s `mirrored`. What lets a third
+// party watch the screen this machine is showing: a web browser through Web
+// Play, say, watching the television on the computer's own monitor.
+inline constexpr uint32_t kExternalFeatureMirror = 1024u;
 
 // How the menu comes and goes, for the end that animates it: opened from the
 // game, the backdrop fades in quickly and the menu just after, growing the
@@ -800,8 +805,15 @@ public:
     // the television, and only this end knows which it is being. Absent
     // leaves the producer's own display choice alone, which is what a
     // consumer that has no opinion sends.
+    //
+    // `mirrored` is screens to capture and send as well -- bit 0 the top
+    // screen, bit 1 the bottom -- without taking them away from the
+    // producer's own window and speakers: a screen in it that is not `screen`
+    // is still shown and heard there, and sent besides. Only to a producer
+    // that said kExternalFeatureMirror; an older one ignores it.
     void request_screen(std::optional<ScreenId> screen, int max_width = 0, int max_height = 0,
-                        std::optional<ScreenId> shown = std::nullopt);
+                        std::optional<ScreenId> shown = std::nullopt, uint8_t mirrored = 0);
+    bool mirror_supported() const { return connected() && (info_.features & kExternalFeatureMirror) != 0u; }
 
     // The GamePad motor's state as of the last thing the producer sent, and
     // whether anything new has arrived since the last call -- a one-shot,
@@ -978,6 +990,7 @@ private:
     // from "sent, meaning no opinion", or the first request never goes out.
     bool have_sent_shown_ = false;
     std::optional<ScreenId> sent_shown_;
+    uint8_t sent_mirrored_ = 0;
     bool rumble_active_ = false;
     bool have_new_rumble_ = false;
     // What send_player_input() last got onto the wire, per player -- the same
@@ -1102,6 +1115,13 @@ public:
     // request_screen(), whose `shown` this is.
     std::optional<ScreenId> shown_screen() const { return shown_screen_; }
 
+    // The screens the consumer wants sent as well as shown here, as of the
+    // last poll(): bit 0 the top screen, bit 1 the bottom. See
+    // request_screen()'s `mirrored`, and kExternalFeatureMirror, which a
+    // producer that acts on this says in its Hello.
+    uint8_t mirrored_screens() const { return mirrored_screens_; }
+    bool mirrors(ScreenId screen) const { return (mirrored_screens_ & (screen == ScreenId::Top ? 1u : 2u)) != 0u; }
+
     // Tells the consumer its menu key was pressed in this producer's window.
     void send_menu_key();
     // Whether the consumer wants an overlay drawn, as of the last poll(), and
@@ -1214,6 +1234,7 @@ private:
     int requested_max_width_ = 0;
     int requested_max_height_ = 0;
     std::optional<ScreenId> shown_screen_;
+    uint8_t mirrored_screens_ = 0;
     bool sent_rumble_ = false;
     bool have_sent_rumble_ = false;
     ExternalInput player_input_[kExternalPlayers];
