@@ -54,7 +54,8 @@ void DualscreenSession::Start(int tvWidth, int tvHeight, int padWidth, int padHe
 	// -- see ShowGameDialog().
 	info.features = ds::kExternalFeatureOverlay | ds::kExternalFeaturePause |
 					ds::kExternalFeatureOverlayPointer | ds::kExternalFeatureGameDialogs |
-					ds::kExternalFeatureOverlayAnimation | ds::kExternalFeatureLargeOverlay;
+					ds::kExternalFeatureOverlayAnimation | ds::kExternalFeatureLargeOverlay |
+					ds::kExternalFeatureMirror;
 	{
 		std::scoped_lock requests(m_requestsMutex);
 		if (m_requestHandler)
@@ -84,6 +85,7 @@ void DualscreenSession::Start(int tvWidth, int tvHeight, int padWidth, int padHe
 	m_requestedScreen.reset();
 	m_runningAtomic.store(true, std::memory_order_relaxed);
 	m_requestedScreenAtomic.store(-1, std::memory_order_relaxed);
+	m_mirroredAtomic.store(0, std::memory_order_relaxed);
 	m_requestedMaxWidthAtomic.store(0, std::memory_order_relaxed);
 	m_requestedMaxHeightAtomic.store(0, std::memory_order_relaxed);
 	// Nothing a previous session was still holding belongs to this one. Taken
@@ -109,6 +111,7 @@ void DualscreenSession::Stop()
 	m_requestedScreen.reset();
 	m_runningAtomic.store(false, std::memory_order_relaxed);
 	m_requestedScreenAtomic.store(-1, std::memory_order_relaxed);
+	m_mirroredAtomic.store(0, std::memory_order_relaxed);
 	m_requestedMaxWidthAtomic.store(0, std::memory_order_relaxed);
 	m_requestedMaxHeightAtomic.store(0, std::memory_order_relaxed);
 	// Nothing a previous session was still holding belongs to this one. Taken
@@ -146,6 +149,7 @@ void DualscreenSession::Poll()
 		m_requestedScreen.reset();
 		m_runningAtomic.store(false, std::memory_order_relaxed);
 		m_requestedScreenAtomic.store(-1, std::memory_order_relaxed);
+	m_mirroredAtomic.store(0, std::memory_order_relaxed);
 	m_requestedMaxWidthAtomic.store(0, std::memory_order_relaxed);
 	m_requestedMaxHeightAtomic.store(0, std::memory_order_relaxed);
 		m_overlayVisibleAtomic.store(false, std::memory_order_relaxed);
@@ -262,6 +266,7 @@ void DualscreenSession::Poll()
 	m_requestedScreenAtomic.store(
 		m_requestedScreen ? (*m_requestedScreen == ds::ScreenId::Top ? 0 : 1) : -1,
 		std::memory_order_relaxed);
+	m_mirroredAtomic.store(m_producer.mirrored_screens(), std::memory_order_relaxed);
 	// Published after the screen itself, and read the other way round in
 	// CaptureSize(): a frame that briefly sees the old cap alongside the new
 	// screen is one frame at the wrong size, which the shell caps again on
@@ -334,6 +339,15 @@ bool DualscreenSession::ShouldCapture(ds::ScreenId screen)
 	// These two atomics mirror m_running/m_requestedScreen -- both written
 	// only under m_mutex, from Poll() -- so this answers without the lock at
 	// all rather than merely trying for it.
+	if (!m_runningAtomic.load(std::memory_order_relaxed))
+		return false;
+	if (IsRequested(screen))
+		return true;
+	return (m_mirroredAtomic.load(std::memory_order_relaxed) & (screen == ds::ScreenId::Top ? 1 : 2)) != 0;
+}
+
+bool DualscreenSession::IsRequested(ds::ScreenId screen)
+{
 	if (!m_runningAtomic.load(std::memory_order_relaxed))
 		return false;
 	const int requested = m_requestedScreenAtomic.load(std::memory_order_relaxed);

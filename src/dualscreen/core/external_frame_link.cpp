@@ -1755,14 +1755,14 @@ void ExternalFrameLink::send_player_input(int player, bool connected, const Exte
 }
 
 void ExternalFrameLink::request_screen(std::optional<ScreenId> screen, int max_width,
-                                       int max_height, std::optional<ScreenId> shown) {
+                                       int max_height, std::optional<ScreenId> shown, uint8_t mirrored) {
     // Clamped rather than trusted: these come from a companion device's own
     // reported window size, and a negative or absurd one must not turn into a
     // capture size the producer then tries to allocate for.
     max_width = std::max(0, std::min(max_width, ExternalSharedHeader::kMaxWidth));
     max_height = std::max(0, std::min(max_height, ExternalSharedHeader::kMaxHeight));
     if (screen == sent_screen_ && max_width == sent_max_width_ &&
-        max_height == sent_max_height_ && have_sent_shown_ && shown == sent_shown_) {
+        max_height == sent_max_height_ && have_sent_shown_ && shown == sent_shown_ && mirrored == sent_mirrored_) {
         return;  // Nothing has changed; see sent_screen_.
     }
     std::vector<uint8_t> body;
@@ -1786,6 +1786,8 @@ void ExternalFrameLink::request_screen(std::optional<ScreenId> screen, int max_w
     // built before this existed stops reading after the size and falls back
     // to choosing its own screen, which is what it did anyway.
     body.push_back(!shown.has_value() ? 2u : (*shown == ScreenId::Top ? 0u : 1u));
+    // And the screens to send as well as show, the same way again.
+    body.push_back(static_cast<uint8_t>(mirrored & 3u));
     if (!send_control(ExternalControl::RequestScreen, body)) {
         return;  // Not recorded as sent, so the next call tries again.
     }
@@ -1793,6 +1795,7 @@ void ExternalFrameLink::request_screen(std::optional<ScreenId> screen, int max_w
     sent_max_width_ = max_width;
     sent_max_height_ = max_height;
     sent_shown_ = shown;
+    sent_mirrored_ = static_cast<uint8_t>(mirrored & 3u);
     have_sent_shown_ = true;
 }
 
@@ -2373,6 +2376,7 @@ bool ExternalFrameProducer::poll(bool& out_reset_requested, std::string* error) 
                 } else {
                     shown_screen_.reset();
                 }
+                mirrored_screens_ = body.size() >= 7 ? static_cast<uint8_t>(body[6] & 3u) : 0u;
             }
         } else if (kind == ExternalControl::Pointer) {
             if (!body.empty()) {
@@ -2495,7 +2499,7 @@ void ExternalFrameLink::take_audio(ScreenId, std::vector<int16_t>& out) { out.cl
 void ExternalFrameLink::request_reset() {}
 void ExternalFrameLink::send_input(const ExternalInput&) {}
 void ExternalFrameLink::request_screen(std::optional<ScreenId>, int, int,
-                                       std::optional<ScreenId>) {}
+                                       std::optional<ScreenId>, uint8_t) {}
 bool ExternalFrameLink::take_rumble(bool&) { return false; }
 void ExternalFrameLink::send_player_input(int, bool, const ExternalInput&) {}
 bool ExternalFrameLink::take_player_rumble(int&, bool&) { return false; }

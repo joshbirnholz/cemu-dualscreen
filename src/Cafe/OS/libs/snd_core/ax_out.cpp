@@ -311,6 +311,11 @@ namespace snd_core
 				// the other was heard by nobody, over the top of the one that
 				// was. See ShouldPlayLocally().
 				const bool wanted = DualscreenSession::instance().ShouldCapture(ds::ScreenId::Top);
+				// Mirrored, it is heard here as well as sent: the shell only
+				// asked for a copy, for a browser watching (Web Play).
+				if (wanted && !DualscreenSession::instance().IsRequested(ds::ScreenId::Top) &&
+					DualscreenSession::instance().ShouldPlayLocally(ds::ScreenId::Top))
+					FeedLocally(*g_tvAudio, s_tvLocalStretch, tempTVChannelData, channels);
 				if (!wanted)
 				{
 					if (DualscreenSession::instance().ShouldPlayLocally(ds::ScreenId::Top))
@@ -485,6 +490,11 @@ namespace snd_core
 				// it separately from the TV's -- see the other SendAudio
 				// call above.
 				const bool wanted = DualscreenSession::instance().ShouldCapture(ds::ScreenId::Bottom);
+				// Mirrored, it is heard here as well as sent: the shell only
+				// asked for a copy, for a browser watching (Web Play).
+				if (wanted && !DualscreenSession::instance().IsRequested(ds::ScreenId::Bottom) &&
+					DualscreenSession::instance().ShouldPlayLocally(ds::ScreenId::Bottom))
+					FeedLocally(*g_padAudio, s_drcLocalStretch, tempDRCChannelData, channels);
 				if (!wanted)
 				{
 					// And silent rather than local when nothing is showing it
@@ -685,7 +695,7 @@ namespace snd_core
 			if (!device)
 				return false;
 			DualscreenSession& session = DualscreenSession::instance();
-			if (session.ShouldCapture(screen) || !session.ShouldPlayLocally(screen))
+			if (session.IsRequested(screen) || !session.ShouldPlayLocally(screen))
 				return false;
 			return device->NeedAdditionalBlocks();
 		};

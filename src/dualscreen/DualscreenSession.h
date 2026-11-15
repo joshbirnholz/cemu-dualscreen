@@ -78,7 +78,14 @@ public:
 	// whichever screen a connected shell is not currently watching: nothing
 	// is captured, converted, or sent for it, the same as if no session
 	// existed. See core/external_frame_link.hpp's RequestScreen.
+	//
+	// True too for a screen the shell asked to have mirrored -- sent as well
+	// as shown here, for a web browser watching it through Web Play.
 	bool ShouldCapture(ds::ScreenId screen);
+	// Whether the shell asked for this screen to be sent instead of played
+	// here: ShouldCapture() less the mirrored screens. A screen only mirrored
+	// is still this machine's to show and hear.
+	bool IsRequested(ds::ScreenId screen);
 	// Whether a screen this machine is not sending anywhere should be heard
 	// out of its own speakers. Only meaningful for a screen ShouldCapture()
 	// said no to; see the definition.
@@ -275,6 +282,9 @@ private:
 	// which is not itself lock-free on every platform this builds for.
 	std::atomic<bool> m_runningAtomic{false};
 	std::atomic<int> m_requestedScreenAtomic{-1};
+	// The screens to send as well as show, bit 0 the TV and bit 1 the
+	// GamePad -- see ds::kExternalFeatureMirror. Same terms again.
+	std::atomic<int> m_mirroredAtomic{0};
 	// And the size cap alongside it, written and read on exactly the same
 	// terms. Zero means the shell expressed no preference, which is what a
 	// shell that has not yet learned its own companion's display size sends
